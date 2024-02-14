@@ -1,4 +1,5 @@
 #! /usr/bin/env python
+import os
 import gym
 import tqdm
 import wandb
@@ -11,7 +12,9 @@ from jaxrl2.data import ReplayBuffer
 from jaxrl2.evaluation import evaluate
 from jaxrl2.wrappers import wrap_gym
 from jaxrl2.utils.save_load_agent import save_SAC_agent, load_SAC_agent, equal_SAC_agents
+from jaxrl2.utils.save_expr_log import save_log
 
+from tensorboardX import SummaryWriter
 from datetime import datetime
 
 FLAGS = flags.FLAGS
@@ -40,13 +43,20 @@ config_flags.DEFINE_config_file(
     lock_config=False,
 )
 
-
+# Path 1: purely online (on)
+# Path 2: online2offline (on2of)
+# path 3: online2offline2online (on2of2on)
 def main(_):
     now = datetime.now()
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
-
-    wandb.init(project="jaxrl2_online")
-    wandb.config.update(FLAGS)
+    project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_on_sac_{expr_time_str}"
+    project_dir = os.path.join(FLAGS.save_dir, project_name)
+    os.makedirs(project_dir, exist_ok=True)
+    if FLAGS.wandb:
+        summary_writer = wandb.init(project=project_name)
+        summary_writer.config.update(FLAGS)
+    else:
+        summary_writer = SummaryWriter(project_dir, write_to_disk=True)
 
     env = gym.make(FLAGS.env_name)
     env = wrap_gym(env, rescale_actions=True)
@@ -62,16 +72,15 @@ def main(_):
 
     # evaluate the initial agent
     eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
-    for k, v in eval_info.items():
-        wandb.log({f"evaluation/{k}": v}, step=0)
+    save_log(summary_writer, eval_info, 0, "evaluation", use_wandb=FLAGS.wandb)
     # save the initial best agent
     if FLAGS.save_best:
-        best_ckpt_filepath = f"{FLAGS.save_dir}/{FLAGS.env_name}/{FLAGS.seed}/sac/{expr_time_str}/best_ckpt"
-        best_ckpt_performance = eval_info["return"]
+        best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
+        best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":0}
         save_SAC_agent(agent, 0, best_ckpt_filepath)
     # save the checkpoint at step 0: the initial agent
     if FLAGS.save_ckpt:
-        ckpt_filepath = f"{FLAGS.save_dir}/{FLAGS.env_name}/{FLAGS.seed}/sac/{expr_time_str}/ckpt_0"
+        ckpt_filepath = f"{project_dir}/ckpts/ckpt_0"
         save_SAC_agent(agent, 0, ckpt_filepath)
 
     replay_buffer = ReplayBuffer(
@@ -117,27 +126,27 @@ def main(_):
             update_info = agent.update(batch)
 
             if i % FLAGS.log_interval == 0:
-                for k, v in update_info.items():
-                    wandb.log({f"training/{k}": v}, step=i)
+                save_log(summary_writer, update_info, i, "training", use_wandb=FLAGS.wandb)
 
         if i % FLAGS.eval_interval == 0:
             eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
-            for k, v in eval_info.items():
-                wandb.log({f"evaluation/{k}": v}, step=i)
+            save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
 
             # save the initial best agent
-            if FLAGS.save_best and best_ckpt_performance < eval_info["return"]:
-                best_ckpt_performance = eval_info["return"]
+            if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
+                best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
+                best_ckpt_performance["best_ckpt_step"] = i
                 save_SAC_agent(agent, i, best_ckpt_filepath)
             # save the checkpoint at step i
             if FLAGS.save_ckpt and (i % FLAGS.ckpt_interval == 0):
-                ckpt_filepath = f"{FLAGS.save_dir}/{FLAGS.env_name}/{FLAGS.seed}/sac/{expr_time_str}/ckpt_{i}"
+                ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
                 save_SAC_agent(agent, i, ckpt_filepath)
 
                 # saneity check for saving and loading
-                agent2 = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
-                load_SAC_agent(agent2, ckpt_filepath)
-                print(f"Are the agents equal? {equal_SAC_agents(agent, agent2)}")
+                #agent2 = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
+                #load_SAC_agent(agent2, ckpt_filepath)
+                #print(f"Are the agents equal? {equal_SAC_agents(agent, agent2)}")
+            save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
 
 if __name__ == "__main__":
     app.run(main)
