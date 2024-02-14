@@ -10,6 +10,9 @@ from jaxrl2.agents import SACLearner
 from jaxrl2.data import ReplayBuffer
 from jaxrl2.evaluation import evaluate
 from jaxrl2.wrappers import wrap_gym
+from jaxrl2.utils.save_load_agent import save_SAC_agent, load_SAC_agent, equal_SAC_agents
+
+from datetime import datetime
 
 FLAGS = flags.FLAGS
 
@@ -19,11 +22,14 @@ flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("eval_episodes", 10, "Number of episodes used for evaluation.")
 flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
 flags.DEFINE_integer("eval_interval", 5000, "Eval interval.")
+flags.DEFINE_integer("ckpt_interval", 10000, "Checkpoint interval.")
 flags.DEFINE_integer("batch_size", 256, "Mini batch size.")
 flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
 flags.DEFINE_integer(
     "start_training", int(1e4), "Number of training steps to start training."
 )
+flags.DEFINE_boolean("save_best", True, "Save the best model.")
+flags.DEFINE_boolean("save_ckpt", True, "Save the checkpoints.")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
 flags.DEFINE_boolean("wandb", True, "Log wandb.")
 flags.DEFINE_boolean("save_video", False, "Save videos during evaluation.")
@@ -36,6 +42,9 @@ config_flags.DEFINE_config_file(
 
 
 def main(_):
+    now = datetime.now()
+    expr_time_str = now.strftime("%Y%m%d-%H%M%S")
+
     wandb.init(project="jaxrl2_online")
     wandb.config.update(FLAGS)
 
@@ -50,6 +59,20 @@ def main(_):
 
     kwargs = dict(FLAGS.config)
     agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
+
+    # evaluate the initial agent
+    eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
+    for k, v in eval_info.items():
+        wandb.log({f"evaluation/{k}": v}, step=0)
+    # save the initial best agent
+    if FLAGS.save_best:
+        best_ckpt_filepath = f"{FLAGS.save_dir}/{FLAGS.env_name}/{FLAGS.seed}/sac/{expr_time_str}/best_ckpt"
+        best_ckpt_performance = eval_info["return"]
+        save_SAC_agent(agent, 0, best_ckpt_filepath)
+    # save the checkpoint at step 0: the initial agent
+    if FLAGS.save_ckpt:
+        ckpt_filepath = f"{FLAGS.save_dir}/{FLAGS.env_name}/{FLAGS.seed}/sac/{expr_time_str}/ckpt_0"
+        save_SAC_agent(agent, 0, ckpt_filepath)
 
     replay_buffer = ReplayBuffer(
         env.observation_space, env.action_space, FLAGS.max_steps
@@ -102,6 +125,19 @@ def main(_):
             for k, v in eval_info.items():
                 wandb.log({f"evaluation/{k}": v}, step=i)
 
+            # save the initial best agent
+            if FLAGS.save_best and best_ckpt_performance < eval_info["return"]:
+                best_ckpt_performance = eval_info["return"]
+                save_SAC_agent(agent, i, best_ckpt_filepath)
+            # save the checkpoint at step i
+            if FLAGS.save_ckpt and (i % FLAGS.ckpt_interval == 0):
+                ckpt_filepath = f"{FLAGS.save_dir}/{FLAGS.env_name}/{FLAGS.seed}/sac/{expr_time_str}/ckpt_{i}"
+                save_SAC_agent(agent, i, ckpt_filepath)
+
+                # saneity check for saving and loading
+                agent2 = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
+                load_SAC_agent(agent2, ckpt_filepath)
+                print(f"Are the agents equal? {equal_SAC_agents(agent, agent2)}")
 
 if __name__ == "__main__":
     app.run(main)
