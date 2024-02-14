@@ -1,8 +1,9 @@
-from typing import Optional, Union
+from typing import Optional, Union, Tuple, Dict
 
 import gym
 import gym.spaces
 import numpy as np
+import h5py
 
 from jaxrl2.data.dataset import Dataset, DatasetDict
 
@@ -70,3 +71,32 @@ class ReplayBuffer(Dataset):
 
         self._insert_index = (self._insert_index + 1) % self._capacity
         self._size = min(self._size + 1, self._capacity)
+
+    def save_dataset_h5py(self, filepath: str, compression='gzip', metadata: Optional[Dict[str, Union[str, int, float]]] = None):
+        with h5py.File(filepath, 'w') as hfile:
+            for k, v in self.dataset_dict.items():
+                hfile.create_dataset(k, data=v[:self._size], compression=compression)
+
+            if metadata is not None:
+                for k, v in metadata.items():
+                    if isinstance(v, str):
+                        v = np.string_(v)
+                    elif isinstance(v, (int, float)):
+                        v = np.array([v], dtype=np.float32)[0]
+                    else:
+                        raise TypeError(f"[Dataset Saving] Unsupported type for metadata: {type(v)}")
+                    hfile[f'metadata/{k}'] = v
+
+    def load_dataset_h5py(self, filepath: str) -> Tuple[Dict, Dict[str, Union[str, int, float]]]:
+        with h5py.File(filepath, 'r') as hfile:
+            dataset_dict = {}
+            metadata = {}
+
+            for k in hfile.keys():
+                v = hfile[k]
+                if k == "metadata":
+                    metadata = {kk: vv[()] if not isinstance(vv[()], np.string_) else str(vv[()]) for kk, vv in v.items()}
+                else:
+                    dataset_dict[k] = v[()]
+
+            return dataset_dict, metadata

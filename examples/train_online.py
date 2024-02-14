@@ -147,5 +147,16 @@ def main(_):
                 #print(f"Are the agents equal? {equal_SAC_agents(agent, agent2)}")
             save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
 
+    replay_buffer_metadata = {}
+    replay_buffer_metadata["max_steps"] = FLAGS.max_steps
+    replay_buffer_metadata["start_training"] = FLAGS.start_training
+    replay_buffer_metadata["seed"] = FLAGS.seed
+    replay_buffer_metadata["env_name"] = FLAGS.env_name
+    replay_buffer_metadata["expr_time_str"] = expr_time_str
+    replay_buffer_metadata["eval_interval"] = FLAGS.eval_interval
+    replay_buffer_metadata["algorithm"] = "SAC"
+    replay_buffer_filepath = f"{project_dir}/final_replay_buffer.h5py"
+    replay_buffer.save_dataset_h5py(replay_buffer_filepath, metadata=replay_buffer_metadata)
+
 if __name__ == "__main__":
     app.run(main)
