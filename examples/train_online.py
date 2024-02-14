@@ -25,7 +25,7 @@ flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("eval_episodes", 10, "Number of episodes used for evaluation.")
 flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
 flags.DEFINE_integer("eval_interval", 5000, "Eval interval.")
-flags.DEFINE_integer("ckpt_interval", 10000, "Checkpoint interval.")
+flags.DEFINE_integer("ckpt_interval", 100000, "Checkpoint interval.")
 flags.DEFINE_integer("batch_size", 256, "Mini batch size.")
 flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
 flags.DEFINE_integer(
@@ -117,9 +117,8 @@ def main(_):
 
         if done:
             observation, done = env.reset(), False
-            for k, v in info["episode"].items():
-                decode = {"r": "return", "l": "length", "t": "time"}
-                wandb.log({f"training/{decode[k]}": v}, step=i)
+            decoder = {"r": "return", "l": "length", "t": "time"}
+            save_log(summary_writer, info["episode"], i, "training", use_wandb=FLAGS.wandb, decoder=decoder)
 
         if i >= FLAGS.start_training:
             batch = replay_buffer.sample(FLAGS.batch_size)
