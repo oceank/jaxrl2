@@ -3,11 +3,11 @@ from typing import Dict, Iterable, Optional, Tuple, Union
 import numpy as np
 from flax.core import frozen_dict
 from gym.utils import seeding
+import matplotlib.pyplot as plt
 
 from jaxrl2.types import DataType
 
 DatasetDict = Dict[str, DataType]
-
 
 def _check_lengths(dataset_dict: DatasetDict, dataset_len: Optional[int] = None) -> int:
     for v in dataset_dict.values():
@@ -163,3 +163,16 @@ class Dataset(object):
             episode_returns
         )
         self.dataset_dict["rewards"] *= scaling
+    
+    def get_episode_returns(self):
+        return self._trajectory_boundaries_and_returns()[2]
+
+def plot_episode_returns(dataset, bin=100, title=None, fig_path="episode_returns.png"):
+    episode_returns = dataset.get_episode_returns()
+    plt.hist(episode_returns, bins=100, edgecolor='black')
+
+    plt.xlabel("Episode Return")
+    plt.ylabel("Frequency")
+    if not title:
+        plt.title(f"{title}")
+    plt.savefig(fig_path)

@@ -86,7 +86,7 @@ class ReplayBuffer(Dataset):
                     else:
                         raise TypeError(f"[Dataset Saving] Unsupported type for metadata: {type(v)}")
                     hfile[f'metadata/{k}'] = v
-
+    @classmethod
     def load_dataset_h5py(self, filepath: str) -> Tuple[Dict, Dict[str, Union[str, int, float]]]:
         with h5py.File(filepath, 'r') as hfile:
             dataset_dict = {}
