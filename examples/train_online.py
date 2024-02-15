@@ -1,5 +1,8 @@
 #! /usr/bin/env python
 import os
+# XLA GPU Deterministic Ops: https://github.com/google/jax/discussions/10674
+os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
+
 import gym
 import tqdm
 import wandb
@@ -46,6 +49,12 @@ config_flags.DEFINE_config_file(
 # Path 1: purely online (on)
 # Path 2: online2offline (on2of)
 # path 3: online2offline2online (on2of2on)
+#
+# Seeding:
+# 1. Seed the environment and the action space
+# 2. Seed the agent
+# 3. Seed the replay buffer
+
 def main(_):
     now = datetime.now()
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
@@ -62,6 +71,7 @@ def main(_):
     env = wrap_gym(env, rescale_actions=True)
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=1)
     env.seed(FLAGS.seed)
+    env.action_space.seed(FLAGS.seed)
 
     eval_env = gym.make(FLAGS.env_name)
     eval_env = wrap_gym(eval_env, rescale_actions=True)
@@ -136,6 +146,7 @@ def main(_):
                 best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
                 best_ckpt_performance["best_ckpt_step"] = i
                 save_agent(agent, i, best_ckpt_filepath)
+                save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
             # save the checkpoint at step i
             if FLAGS.save_ckpt and (i % FLAGS.ckpt_interval == 0):
                 ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
@@ -145,7 +156,7 @@ def main(_):
                 #agent2 = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
                 #load_SAC_agent(agent2, ckpt_filepath)
                 #print(f"Are the agents equal? {equal_SAC_agents(agent, agent2)}")
-            save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
+
 
     replay_buffer_metadata = {}
     replay_buffer_metadata["max_steps"] = FLAGS.max_steps

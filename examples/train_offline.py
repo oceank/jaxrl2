@@ -1,5 +1,8 @@
 #! /usr/bin/env python
 import os
+# XLA GPU Deterministic Ops: https://github.com/google/jax/discussions/10674
+os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
+
 import gym
 import numpy as np
 import jax
@@ -98,6 +101,7 @@ def main(_):
     env = gym.make(FLAGS.env_name) # how does the name, "halfcheetah-expert-v2", map to the actual environment?
     env = wrap_gym(env)
     env.seed(FLAGS.seed)
+    env.action_space.seed(FLAGS.seed)
 
     if FLAGS.dataset_name == "d4rl":
         dataset = D4RLDataset(env)
