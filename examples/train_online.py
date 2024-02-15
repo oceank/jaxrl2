@@ -11,7 +11,7 @@ from jaxrl2.agents import SACLearner
 from jaxrl2.data import ReplayBuffer
 from jaxrl2.evaluation import evaluate
 from jaxrl2.wrappers import wrap_gym
-from jaxrl2.utils.save_load_agent import save_SAC_agent, load_SAC_agent, equal_SAC_agents
+from jaxrl2.utils.save_load_agent import save_agent, load_agent, equal_SAC_agents
 from jaxrl2.utils.save_expr_log import save_log
 
 from tensorboardX import SummaryWriter
@@ -77,11 +77,11 @@ def main(_):
     if FLAGS.save_best:
         best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
         best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":0}
-        save_SAC_agent(agent, 0, best_ckpt_filepath)
+        save_agent(agent, 0, best_ckpt_filepath)
     # save the checkpoint at step 0: the initial agent
     if FLAGS.save_ckpt:
         ckpt_filepath = f"{project_dir}/ckpts/ckpt_0"
-        save_SAC_agent(agent, 0, ckpt_filepath)
+        save_agent(agent, 0, ckpt_filepath)
 
     replay_buffer = ReplayBuffer(
         env.observation_space, env.action_space, FLAGS.max_steps
@@ -131,15 +131,15 @@ def main(_):
             eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
             save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
 
-            # save the initial best agent
+            # save the current best agent
             if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
                 best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
                 best_ckpt_performance["best_ckpt_step"] = i
-                save_SAC_agent(agent, i, best_ckpt_filepath)
+                save_agent(agent, i, best_ckpt_filepath)
             # save the checkpoint at step i
             if FLAGS.save_ckpt and (i % FLAGS.ckpt_interval == 0):
                 ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
-                save_SAC_agent(agent, i, ckpt_filepath)
+                save_agent(agent, i, ckpt_filepath)
 
                 # saneity check for saving and loading
                 #agent2 = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)

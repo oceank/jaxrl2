@@ -3,6 +3,55 @@ import jax
 from flax.training import orbax_utils
 import orbax.checkpoint
 
+from jaxrl2.agents import SACLearner, DrQLearner, BCLearner, IQLLearner
+
+def save_agent(agent, i, ckpt_filepath, force=True):
+    if isinstance(agent, SACLearner):
+        save_SAC_agent(agent, i, ckpt_filepath, force)
+    elif isinstance(agent, IQLLearner):
+        save_IQL_agent(agent, i, ckpt_filepath, force)
+    else:
+        raise ValueError("The agent to save must be an instance of SACLearner or IQLearner")
+
+def load_agent(agent, ckpt_filepath):
+    if isinstance(agent, SACLearner):
+        load_SAC_agent(agent, ckpt_filepath)
+    elif isinstance(agent, IQLLearner):
+        load_IQL_agent(agent, ckpt_filepath)
+    else:
+        raise ValueError("The agent to load must be an instance of SACLearner or IQLearner")
+    
+
+def save_IQL_agent(agent, i, ckpt_filepath, force=True):
+    ckpt = {
+        "step": i,
+        "actor": agent._actor,
+        "critic": agent._critic,
+        "value": agent._value,
+        "target_critic_params": agent._target_critic_params,
+        "rng": agent._rng,
+    }
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    save_args = orbax_utils.save_args_from_target(ckpt)
+    orbax_checkpointer.save(ckpt_filepath, ckpt, save_args=save_args, force=force)
+
+def load_IQL_agent(agent, ckpt_filepath):
+    target = {
+        "step": 0,
+        "actor": agent._actor,
+        "critic": agent._critic,
+        "value": agent._value,
+        "target_critic_params": agent._target_critic_params,
+        "rng": agent._rng
+    }
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    ckpt_restored = orbax_checkpointer.restore(ckpt_filepath, item=target)
+    agent._actor = ckpt_restored["actor"]
+    agent._critic = ckpt_restored["critic"]
+    agent._value = ckpt_restored["value"]
+    agent._target_critic_params = ckpt_restored["target_critic_params"]
+    agent._rng = ckpt_restored["rng"]
+
 def save_SAC_agent(agent, i, ckpt_filepath, force=True):
     ckpt = {
         "step": i,
