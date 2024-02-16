@@ -70,6 +70,7 @@ flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
 flags.DEFINE_boolean("wandb", True, "Log wandb.")
 flags.DEFINE_boolean("save_best", True, "Save the best model.")
+flags.DEFINE_boolean("normalize_eval_return", True, "Normalize the average return in evaluation.")
 flags.DEFINE_float("filter_percentile", None, "Take top N% trajectories.")
 flags.DEFINE_float(
     "filter_threshold", None, "Take trajectories with returns above the threshold."
@@ -166,7 +167,11 @@ def main(_):
 
         if i % FLAGS.eval_interval == 0:
             eval_info = evaluate(agent, env, num_episodes=FLAGS.eval_episodes)
-            eval_info["return"] = env.get_normalized_score(eval_info["return"]) * 100.0
+            # normalize the return: use the Reference MAX and MIN returns stored in
+            # the registred environments defined in D4RL.
+            # ToDO: use the MAX and MIN evaluation returns from online learning with the same seed
+            if FLAGS.normalize_eval_return:
+                eval_info["return"] = env.get_normalized_score(eval_info["return"]) * 100.0
             save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
 
             # save the current best agent
