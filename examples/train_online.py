@@ -3,11 +3,13 @@ import os
 # XLA GPU Deterministic Ops: https://github.com/google/jax/discussions/10674
 os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
 
+import json
 import gym
 import tqdm
 import wandb
 from absl import app, flags
 from ml_collections import config_flags
+from ml_collections.config_dict.config_dict import ConfigDict
 
 import jaxrl2.extra_envs.dm_control_suite
 from jaxrl2.agents import SACLearner
@@ -20,6 +22,7 @@ from jaxrl2.utils.save_expr_log import save_log
 from tensorboardX import SummaryWriter
 from datetime import datetime
 
+Training_Testing_Seed_Gap = 10000
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string("env_name", "HalfCheetah-v2", "Environment name.")
@@ -56,11 +59,21 @@ config_flags.DEFINE_config_file(
 # 3. Seed the replay buffer
 
 def main(_):
+    # create the project directory
     now = datetime.now()
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
     project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_on_sac_{expr_time_str}"
     project_dir = os.path.join(FLAGS.save_dir, project_name)
     os.makedirs(project_dir, exist_ok=True)
+
+    # save configuration to file
+    flags_dict = flags.FLAGS.flags_by_module_dict()
+    flags_dict = {k: {v.name: v.value for v in vs} for k, vs in flags_dict.items()}
+    expr_config_filepath = f"{project_dir}/expr_config.json"
+    expr_config_dict = {k:(v.to_dict() if isinstance(v, ConfigDict) else v) for k, v in flags_dict[_[0]].items()}
+    with open(expr_config_filepath, "w") as f:
+        json.dump(expr_config_dict, f, indent=4)
+
     if FLAGS.wandb:
         summary_writer = wandb.init(project=project_name)
         summary_writer.config.update(FLAGS)
@@ -75,13 +88,21 @@ def main(_):
 
     eval_env = gym.make(FLAGS.env_name)
     eval_env = wrap_gym(eval_env, rescale_actions=True)
-    eval_env.seed(FLAGS.seed + 42)
+    eval_env.seed(FLAGS.seed + Training_Testing_Seed_Gap)
 
     kwargs = dict(FLAGS.config)
     agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
 
     # evaluate the initial agent
     eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
+    eval_filepath = f"{project_dir}/eval_ave_episode_return.txt"
+    with open(eval_filepath, "w") as f:
+        expr_now = datetime.now()
+        expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
+        step = 0
+        f.write(f"Experiment Time\tStep\tReturn\n")
+        f.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
+    eval_file = open(eval_filepath, "a")
     save_log(summary_writer, eval_info, 0, "evaluation", use_wandb=FLAGS.wandb)
     # save the initial best agent
     if FLAGS.save_best:
@@ -139,6 +160,11 @@ def main(_):
 
         if i % FLAGS.eval_interval == 0:
             eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
+            expr_now = datetime.now()
+            expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
+            step = i
+            eval_file.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
+            eval_file.flush()
             save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
 
             # save the current best agent
@@ -157,6 +183,12 @@ def main(_):
                 #load_SAC_agent(agent2, ckpt_filepath)
                 #print(f"Are the agents equal? {equal_SAC_agents(agent, agent2)}")
 
+    if FLAGS.save_best:
+        eval_file.write(f"**Best Policy**\t{best_ckpt_performance['best_ckpt_step']}\t{best_ckpt_performance['best_ckpt_return']}\n")
+    eval_file.close()
+
+    if not FLAGS.wandb: # close the tensorboard writer. wandb will close it automatically
+        summary_writer.close()
 
     replay_buffer_metadata = {}
     replay_buffer_metadata["max_steps"] = FLAGS.max_steps

@@ -3,6 +3,7 @@ import os
 # XLA GPU Deterministic Ops: https://github.com/google/jax/discussions/10674
 os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
 
+import json
 import gym
 import numpy as np
 import jax
@@ -10,6 +11,7 @@ import tqdm
 import wandb
 from absl import app, flags
 from ml_collections import config_flags
+from ml_collections.config_dict.config_dict import ConfigDict
 
 from jaxrl2.agents import BCLearner, IQLLearner
 from jaxrl2.data import D4RLDataset, ReplayBuffer, Dataset, plot_episode_returns
@@ -84,15 +86,24 @@ config_flags.DEFINE_config_file(
 
 
 def main(_):
+    # create the project directory
     now = datetime.now()
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
     offline_algo="iql"
     dataset_names = FLAGS.dataset_name.split(",")
     dataset_tag = "".join([get_dataset_tag(dn, FLAGS.env_name) for dn in dataset_names])
-
     project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_off_{offline_algo}_{dataset_tag}_{expr_time_str}"
     project_dir = os.path.join(FLAGS.save_dir, project_name)
     os.makedirs(project_dir, exist_ok=True)
+
+    # save configuration to file
+    flags_dict = flags.FLAGS.flags_by_module_dict()
+    flags_dict = {k: {v.name: v.value for v in vs} for k, vs in flags_dict.items()}
+    expr_config_filepath = f"{project_dir}/expr_config.json"
+    expr_config_dict = {k:(v.to_dict() if isinstance(v, ConfigDict) else v) for k, v in flags_dict[_[0]].items()}
+    with open(expr_config_filepath, "w") as f:
+        json.dump(expr_config_dict, f, indent=4)
+
     if FLAGS.wandb:
         summary_writer = wandb.init(project=project_name)
         summary_writer.config.update(FLAGS)
@@ -145,6 +156,15 @@ def main(_):
 
     # evaluate the initial agent
     eval_info = evaluate(agent, env, num_episodes=FLAGS.eval_episodes)
+    eval_filepath = f"{project_dir}/eval_ave_episode_return.txt"
+    with open(eval_filepath, "w") as f:
+        expr_now = datetime.now()
+        expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
+        step = 0
+        f.write(f"Experiment Time\tStep\tReturn\n")
+        f.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
+    eval_file = open(eval_filepath, "a")
+
     save_log(summary_writer, eval_info, 0, "evaluation", use_wandb=FLAGS.wandb)
     # save the initial agent
     initial_ckpt_filepath = f"{project_dir}/ckpts/ckpt_0"
@@ -172,6 +192,11 @@ def main(_):
             # ToDO: use the MAX and MIN evaluation returns from online learning with the same seed
             if FLAGS.normalize_eval_return:
                 eval_info["return"] = env.get_normalized_score(eval_info["return"]) * 100.0
+            expr_now = datetime.now()
+            expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
+            step = i
+            eval_file.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
+            eval_file.flush()
             save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
 
             # save the current best agent
@@ -183,6 +208,13 @@ def main(_):
 
     final_ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
     save_agent(agent, i, final_ckpt_filepath)
+
+    if FLAGS.save_best:
+        eval_file.write(f"**Best Policy**\t{best_ckpt_performance['best_ckpt_step']}\t{best_ckpt_performance['best_ckpt_return']}\n")
+    eval_file.close()
+
+    if not FLAGS.wandb: # close the tensorboard writer. wandb will close it automatically
+        summary_writer.close()
 
 if __name__ == "__main__":
     app.run(main)
