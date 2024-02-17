@@ -14,16 +14,34 @@ If you use JAXRL2 in your work, please cite this repository in publications:
 ```
 
 ## Installation
-
-Run
+Create an anaconda environment with Python 3.9
 ```bash
-pip install --upgrade pip
+    conda create -n path python=3.9
+'''
 
-pip install -e .
-pip install --upgrade "jax[cuda]" -f https://storage.googleapis.com/jax-releases/jax_releases.html  # Note: wheels only available on linux.
+[Install mujoco-py without the root privileges](https://github.com/openai/mujoco-py/issues/627)
+```bash
+    conda install -c conda-forge glew
+    conda install -c conda-forge mesalib
+    conda install -c menpo glfw3
+```
+Then add the conda environment include to CPATH
+```bash
+    export CPATH=$CONDA_PREFIX/include:${CPATH}
+```
+Finally, install patchelf with
+```bash
+    pip install patchelf
 ```
 
-See instructions for other versions of CUDA [here](https://github.com/google/jax#pip-installation-gpu-cuda).
+Install prerequite packages in requirements.txt, jaxrl2 and JAX with CUDA. Run
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install -e .
+pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html # [Note: wheels only available on linux and it installs CUDA 11.](https://jax.readthedocs.io/en/latest/installation.html)
+```
+
 
 ## Examples
 
