@@ -24,18 +24,6 @@ from jaxrl2.utils.save_expr_log import save_log
 from tensorboardX import SummaryWriter
 from datetime import datetime
 
-def save_nvidia_smi_output(filename):
-  """Saves the output of nvidia-smi to a file.
-
-  Args:
-    filename: The name of the file to save the output to.
-  """
-
-  commands = ["hostname", "echo", "nvidia-smi"]
-  with open(filename, "w") as f:
-      for command in commands:
-        output = subprocess.check_output(command)
-        f.write(output.decode("utf-8"))
 
 self_collect_dataset_tags = {
     "RandomPolicy": ["ckpt0"],
@@ -70,6 +58,27 @@ def get_dataset_tag(dataset_name, env_name):
         dataset_tag = "d4rl"
     return dataset_tag
 
+def save_machine_info(filename):
+    """
+    Saves the output of hostname and nvidia-smi to a file.
+    Checks if JAX is using the GPU.
+
+    Args:
+        filename: The name of the file to save the output to.
+    """
+    commands = ["hostname", "echo", "nvidia-smi"]
+    with open(filename, "w") as f:
+        # Save the hostname, NIVDIA driver version and CUDA version 
+        for command in commands:
+            output = subprocess.check_output(command)
+            f.write(output.decode("utf-8"))
+        # Check if JAX is using the GPU
+        f.write("jax.default_backend():\n")
+        result = jax.default_backend()
+        f.write(f"==>{result}\n")
+        f.write("jax.device_put(jax.numpy.ones(1), device=jax.devices('gpu')[0]):\n")
+        result = jax.device_put(jax.numpy.ones(1), device=jax.devices('gpu')[0])
+        f.write(f"==>{result}\n")
 
 FLAGS = flags.FLAGS
 
@@ -111,7 +120,7 @@ def main(_):
     os.makedirs(project_dir, exist_ok=True)
 
     # save the machine's nvidia-smi output
-    save_nvidia_smi_output(f"{project_dir}/machine_info.txt")
+    save_machine_info(f"{project_dir}/machine_info.txt")
 
     # save configuration to file
     flags_dict = flags.FLAGS.flags_by_module_dict()
