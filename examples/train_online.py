@@ -3,6 +3,7 @@ import os
 # XLA GPU Deterministic Ops: https://github.com/google/jax/discussions/10674
 os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
 
+import subprocess
 import json
 import gym
 import tqdm
@@ -21,6 +22,19 @@ from jaxrl2.utils.save_expr_log import save_log
 
 from tensorboardX import SummaryWriter
 from datetime import datetime
+
+def save_nvidia_smi_output(filename):
+  """Saves the output of nvidia-smi to a file.
+
+  Args:
+    filename: The name of the file to save the output to.
+  """
+
+  commands = ["hostname", "echo", "nvidia-smi"]
+  with open(filename, "w") as f:
+      for command in commands:
+        output = subprocess.check_output(command)
+        f.write(output.decode("utf-8"))
 
 Training_Testing_Seed_Gap = 10000
 FLAGS = flags.FLAGS
@@ -65,6 +79,9 @@ def main(_):
     project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_on_sac_{expr_time_str}"
     project_dir = os.path.join(FLAGS.save_dir, project_name)
     os.makedirs(project_dir, exist_ok=True)
+
+    # save the machine's nvidia-smi output
+    save_nvidia_smi_output(f"{project_dir}/machine_info.txt")
 
     # save configuration to file
     flags_dict = flags.FLAGS.flags_by_module_dict()
