@@ -30,7 +30,7 @@ from datetime import datetime
 self_collect_dataset_tags = {
     "R": ["ckpt0"],
     "E": ["ckpt1000000", "ckpt1100000"],
-    "M": ["ckpt100000", "ckpt200000", "ckpt600000"],
+    "M": ["ckpt100000", "ckpt200000", "ckpt300000", "ckpt400000", "ckpt500000", "ckpt600000"],
 }
 
 def get_num_short_name(steps) -> str:
