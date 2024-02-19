@@ -43,7 +43,6 @@ def get_num_short_name(steps) -> str:
 def get_dataset_tag(dataset_name, env_name):
     dataset_tag = ""
     if dataset_name != "d4rl":
-        raw_env_name = env_name.split("-")[0]
         pieces_of_name = dataset_name.split("_") # e.g., new_1000000_by_ckpt_1000000
         num_experiences = int(pieces_of_name[1])
         ckpt_name = "".join(pieces_of_name[-2:])
@@ -94,6 +93,7 @@ flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
 flags.DEFINE_boolean("wandb", True, "Log wandb.")
 flags.DEFINE_boolean("save_best", True, "Save the best model.")
 flags.DEFINE_boolean("normalize_eval_return", True, "Normalize the average return in evaluation.")
+flags.DEFINE_boolean("use_behavior_policy_buffer", False, "Use the replay bufer of the learned behavior policy as a part of training dataset.")
 flags.DEFINE_float("filter_percentile", None, "Take top N% trajectories.")
 flags.DEFINE_float(
     "filter_threshold", None, "Take trajectories with returns above the threshold."
@@ -113,6 +113,8 @@ def main(_):
     offline_algo="iql"
     dataset_names = FLAGS.dataset_name.split(",")
     dataset_tag = "".join([get_dataset_tag(dn, FLAGS.env_name) for dn in dataset_names])
+    if (FLAGS.dataset_name!="d4rl") and FLAGS.use_behavior_policy_buffer:
+        dataset_tag += "B"
     project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_off_{offline_algo}_{dataset_tag}_{expr_time_str}"
     project_dir = os.path.join(FLAGS.save_dir, project_name)
     os.makedirs(project_dir, exist_ok=True)
@@ -152,6 +154,12 @@ def main(_):
                     dataset[key] = np.concatenate((dataset[key], value), axis=0)
             else:
                 dataset = dataset_loaded
+        if FLAGS.use_behavior_policy_buffer:
+            full_replay_buffer_path = os.path.join(FLAGS.dataset_dir, "final_replay_buffer.h5py")
+            full_replay_buffer, metadata_buffer = ReplayBuffer.load_dataset_h5py(full_replay_buffer_path)
+            largest_ckpt_step = max([int(dn.split('_')[-1]) for dn in dataset_names])
+            for key, value in full_replay_buffer.items():
+                dataset[key] = np.concatenate((dataset[key], value[:largest_ckpt_step]), axis=0)
         dataset = Dataset(dataset_dict=dataset)
 
     plot_episode_returns(
