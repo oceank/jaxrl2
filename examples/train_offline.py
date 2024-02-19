@@ -24,13 +24,13 @@ from jaxrl2.utils.save_expr_log import save_log
 from tensorboardX import SummaryWriter
 from datetime import datetime
 
-
+# R: RandomPolicy
+# E: ExpertPolicy
+# M: MediumPolicy
 self_collect_dataset_tags = {
-    "RandomPolicy": ["ckpt0"],
-    "ExpertPolicy": ["ckpt1000000"],
-    "MediumPolicy": {
-        "halfcheetah": ["ckpt100000", "ckpt200000"],
-    }
+    "R": ["ckpt0"],
+    "E": ["ckpt1000000", "ckpt1100000"],
+    "M": ["ckpt100000", "ckpt200000", "ckpt600000"],
 }
 
 def get_num_short_name(steps) -> str:
@@ -44,16 +44,14 @@ def get_dataset_tag(dataset_name, env_name):
     dataset_tag = ""
     if dataset_name != "d4rl":
         raw_env_name = env_name.split("-")[0]
-        ckpt_name = "".join(dataset_name.split("_")[-2:])
+        pieces_of_name = dataset_name.split("_") # e.g., new_1000000_by_ckpt_1000000
+        num_experiences = int(pieces_of_name[1])
+        ckpt_name = "".join(pieces_of_name[-2:])
         for behavior_policy_tag in self_collect_dataset_tags:
-            if behavior_policy_tag == "MediumPolicy":
-                if ckpt_name in self_collect_dataset_tags[behavior_policy_tag][raw_env_name.lower()]:
-                    dataset_tag = behavior_policy_tag+get_num_short_name(int(dataset_name.split('_')[-1]))
-                    break
-            else:
-                if ckpt_name in self_collect_dataset_tags[behavior_policy_tag]:
-                    dataset_tag = behavior_policy_tag
-                    break
+            if ckpt_name in self_collect_dataset_tags[behavior_policy_tag]:
+                dataset_tag = f"N{get_num_short_name(num_experiences)}"
+                dataset_tag += behavior_policy_tag + get_num_short_name(int(pieces_of_name[-1]))
+                break
     else:
         dataset_tag = "d4rl"
     return dataset_tag
@@ -102,7 +100,7 @@ flags.DEFINE_float(
 )
 config_flags.DEFINE_config_file(
     "config",
-    "configs/offline_config.py:bc",
+    "configs/offline_config.py:iql_mujoco",
     "File path to the training hyperparameter configuration.",
     lock_config=False,
 )
