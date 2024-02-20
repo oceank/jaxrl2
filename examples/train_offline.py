@@ -24,13 +24,14 @@ from jaxrl2.utils.save_expr_log import save_log
 from tensorboardX import SummaryWriter
 from datetime import datetime
 
+'''
 # R: RandomPolicy
 # E: ExpertPolicy
 # M: MediumPolicy
 self_collect_dataset_tags = {
     "R": ["ckpt0"],
     "E": ["ckpt1000000", "ckpt1100000"],
-    "M": ["ckpt100000", "ckpt200000", "ckpt300000", "ckpt400000", "ckpt500000", "ckpt600000"],
+    "M": ["ckpt50000", "ckpt100000", "ckpt200000", "ckpt300000", "ckpt400000", "ckpt500000", "ckpt600000"],
 }
 
 def get_num_short_name(steps) -> str:
@@ -40,17 +41,28 @@ def get_num_short_name(steps) -> str:
         return f"{int(steps/1e3)}k"
     else:
         return f"{int(steps/1e6)}m"
+'''
 def get_dataset_tag(dataset_name, env_name):
     dataset_tag = ""
     if dataset_name != "d4rl":
         pieces_of_name = dataset_name.split("_") # e.g., new_1000000_by_ckpt_1000000
         num_experiences = int(pieces_of_name[1])
+        dataset_tag = f"N{int(num_experiences/1e3)}k"
+        ckpt_step = int(pieces_of_name[-1])
+        if ckpt_step==0:
+            dataset_tag += "R0"
+        elif ckpt_step>1e6:
+            dataset_tag += f"E{int(ckpt_step/1e3)}k"
+        else:
+            dataset_tag += f"M{int(ckpt_step/1e3)}k"
+        '''
         ckpt_name = "".join(pieces_of_name[-2:])
         for behavior_policy_tag in self_collect_dataset_tags:
             if ckpt_name in self_collect_dataset_tags[behavior_policy_tag]:
                 dataset_tag = f"N{get_num_short_name(num_experiences)}"
                 dataset_tag += behavior_policy_tag + get_num_short_name(int(pieces_of_name[-1]))
                 break
+        '''
     else:
         dataset_tag = "d4rl"
     return dataset_tag
