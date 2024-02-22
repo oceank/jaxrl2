@@ -10,6 +10,7 @@ import numpy as np
 import jax
 import tqdm
 import wandb
+import orbax.checkpoint
 from absl import app, flags
 from ml_collections import config_flags
 from ml_collections.config_dict.config_dict import ConfigDict
@@ -142,17 +143,20 @@ def main(_):
     with open(expr_config_filepath, "w") as f:
         json.dump(expr_config_dict, f, indent=4)
 
+    # Initialize the logger for the experiment
     if FLAGS.wandb:
         summary_writer = wandb.init(project=project_name)
         summary_writer.config.update(FLAGS)
     else:
         summary_writer = SummaryWriter(project_dir, write_to_disk=True)
 
+    # create the environment
     env = gym.make(FLAGS.env_name) # how does the name, "halfcheetah-expert-v2", map to the actual environment?
     env = wrap_gym(env)
     env.seed(FLAGS.seed)
     env.action_space.seed(FLAGS.seed)
 
+    # load the dataset, filter it and normalize the rewards as necessary
     if FLAGS.dataset_name == "d4rl":
         dataset = D4RLDataset(env)
     else:
@@ -191,12 +195,14 @@ def main(_):
     elif FLAGS.env_name.split("-")[0] in ["hopper", "halfcheetah", "walker2d"]:
         dataset.normalize_returns(scaling=1000)
 
+    # create the agent and initialize the orbax checkpointer for saving the agent periodically
     kwargs = dict(FLAGS.config.model_config)
     if kwargs.pop("cosine_decay", False):
         kwargs["decay_steps"] = FLAGS.max_steps
     agent = globals()[FLAGS.config.model_constructor](
         FLAGS.seed, env.observation_space.sample(), env.action_space.sample(), **kwargs
     )
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
 
     # evaluate the initial agent
     eval_info = evaluate(agent, env, num_episodes=FLAGS.eval_episodes)
@@ -212,12 +218,12 @@ def main(_):
     save_log(summary_writer, eval_info, 0, "evaluation", use_wandb=FLAGS.wandb)
     # save the initial agent
     initial_ckpt_filepath = f"{project_dir}/ckpts/ckpt_0"
-    save_agent(agent, 0, initial_ckpt_filepath)
+    save_agent(orbax_checkpointer, agent, 0, initial_ckpt_filepath)
     # save the initial best agent
     if FLAGS.save_best:
         best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
         best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":0}
-        save_agent(agent, 0, best_ckpt_filepath)
+        save_agent(orbax_checkpointer, agent, 0, best_ckpt_filepath)
 
     for i in tqdm.tqdm(
         range(1, FLAGS.max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
@@ -247,11 +253,11 @@ def main(_):
             if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
                 best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
                 best_ckpt_performance["best_ckpt_step"] = i
-                save_agent(agent, i, best_ckpt_filepath)
+                save_agent(orbax_checkpointer, agent, i, best_ckpt_filepath)
             save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
 
     final_ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
-    save_agent(agent, i, final_ckpt_filepath)
+    save_agent(orbax_checkpointer, agent, i, final_ckpt_filepath)
 
     if FLAGS.save_best:
         eval_file.write(f"**Best Policy**\t{best_ckpt_performance['best_ckpt_step']}\t{best_ckpt_performance['best_ckpt_return']}\n")

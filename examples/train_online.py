@@ -9,6 +9,7 @@ import gym
 import tqdm
 import wandb
 import jax
+import orbax.checkpoint
 from absl import app, flags
 from ml_collections import config_flags
 from ml_collections.config_dict.config_dict import ConfigDict
@@ -101,12 +102,14 @@ def main(_):
     with open(expr_config_filepath, "w") as f:
         json.dump(expr_config_dict, f, indent=4)
 
+    # Initialize the logger for the experiment
     if FLAGS.wandb:
         summary_writer = wandb.init(project=project_name)
         summary_writer.config.update(FLAGS)
     else:
         summary_writer = SummaryWriter(project_dir, write_to_disk=True)
 
+    # create the environments
     env = gym.make(FLAGS.env_name)
     env = wrap_gym(env, rescale_actions=True)
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=1)
@@ -117,8 +120,10 @@ def main(_):
     eval_env = wrap_gym(eval_env, rescale_actions=True)
     eval_env.seed(FLAGS.seed + Training_Testing_Seed_Gap)
 
+    # Create the agent and initialize the orbax checkpointer for saving the agent periodically
     kwargs = dict(FLAGS.config)
     agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
 
     # evaluate the initial agent
     eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
@@ -135,11 +140,11 @@ def main(_):
     if FLAGS.save_best:
         best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
         best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":0}
-        save_agent(agent, 0, best_ckpt_filepath)
+        save_agent(orbax_checkpointer, agent, 0, best_ckpt_filepath)
     # save the checkpoint at step 0: the initial agent
     if FLAGS.save_ckpt:
         ckpt_filepath = f"{project_dir}/ckpts/ckpt_0"
-        save_agent(agent, 0, ckpt_filepath)
+        save_agent(orbax_checkpointer, agent, 0, ckpt_filepath)
 
     replay_buffer = ReplayBuffer(
         env.observation_space, env.action_space, FLAGS.max_steps
@@ -198,12 +203,12 @@ def main(_):
             if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
                 best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
                 best_ckpt_performance["best_ckpt_step"] = i
-                save_agent(agent, i, best_ckpt_filepath)
+                save_agent(orbax_checkpointer, agent, i, best_ckpt_filepath)
                 save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
             # save the checkpoint at step i
-            if FLAGS.save_ckpt and (i % FLAGS.ckpt_interval == 0):
+            if FLAGS.save_ckpt and ((i<1e5 and i%1e4==0) or (i % FLAGS.ckpt_interval == 0)):
                 ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
-                save_agent(agent, i, ckpt_filepath)
+                save_agent(orbax_checkpointer, agent, i, ckpt_filepath)
 
                 # saneity check for saving and loading
                 #agent2 = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)

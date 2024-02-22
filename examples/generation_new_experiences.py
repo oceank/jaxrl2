@@ -2,6 +2,7 @@
 import os
 import gym
 import tqdm
+import orbax.checkpoint
 from absl import app, flags
 from ml_collections import config_flags
 import matplotlib.pyplot as plt
@@ -38,16 +39,18 @@ config_flags.DEFINE_config_file(
 def main(_):
     expr_run_dir = os.path.join(FLAGS.save_dir, FLAGS.run_name)
 
+    # create the environment
     env = gym.make(FLAGS.env_name)
     env = wrap_gym(env, rescale_actions=True)
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=1)
     env.seed(FLAGS.seed)
 
     # load the checkpoint
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     kwargs = dict(FLAGS.config)
     agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
     ckpt_filepath = f"{expr_run_dir}/ckpts/{FLAGS.ckpt_name}"
-    load_SAC_agent(agent, ckpt_filepath)
+    load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath)
 
     replay_buffer = ReplayBuffer(
         env.observation_space, env.action_space, FLAGS.num_steps
