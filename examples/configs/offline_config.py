@@ -64,6 +64,31 @@ def get_iql_mujoco_config():
 
     return config
 
+def get_iql_kitchen_config():
+    config = ml_collections.ConfigDict()
+
+    config.actor_lr = 3e-4
+    config.value_lr = 3e-4
+    config.critic_lr = 3e-4
+
+    config.hidden_dims = (256, 256)
+
+    config.discount = 0.99
+
+    config.expectile = 0.7  # The actual tau for expectiles.
+    config.A_scaling = 0.5
+    # it is used in IQL experiment because some datasets of Kitchen and Adoit is small (<100k) to avoid overfitting
+    # do not set it by default in the initial investigation of paths. it can be set later excliptly when using a small size dataset
+    # config.dropout_rate = 0.1
+    config.dropout_rate = config_dict.placeholder(float)
+    config.cosine_decay = True
+
+    config.tau = 0.005  # For soft target updates.
+
+    config.critic_reduction = "min"
+
+    return config
+
 
 def get_config(config_string):
     possible_structures = {
@@ -79,5 +104,9 @@ def get_config(config_string):
         "iql_mujoco": ml_collections.ConfigDict(
             {"model_constructor": "IQLLearner", "model_config": get_iql_mujoco_config()}
         ),
+        "iql_kitchen": ml_collections.ConfigDict(
+            {"model_constructor": "IQLLearner", "model_config": get_iql_kitchen_config()}
+        ),
+ 
     }
     return possible_structures[config_string]
