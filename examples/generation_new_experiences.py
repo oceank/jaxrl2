@@ -48,41 +48,49 @@ def main(_):
     # load the checkpoint
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     kwargs = dict(FLAGS.config)
-    agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
-    ckpt_filepath = f"{expr_run_dir}/ckpts/{FLAGS.ckpt_name}"
-    load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath)
-
     replay_buffer = ReplayBuffer(
         env.observation_space, env.action_space, FLAGS.num_steps
     )
     replay_buffer.seed(FLAGS.seed)
 
-    observation, done = env.reset(), False
-    for i in tqdm.tqdm(
-        range(1, FLAGS.num_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
-    ):
-        action = agent.sample_actions(observation)
-        next_observation, reward, done, info = env.step(action)
+    ckpt_names = FLAGS.ckpt_name.split("_")
+    new_experiences_per_agent = int(FLAGS.num_steps//len(ckpt_names))
+    new_experiences_amount_list = [FLAGS.num_steps-new_experiences_per_agent*(len(ckpt_names)-1)] + [new_experiences_per_agent]*(len(ckpt_names)-1)
+    print(f"Use the checkpoints: {ckpt_names}")
+    print(f"New experiences to collect: {new_experiences_amount_list}")
+    for ckpt_name, num_steps in zip(ckpt_names,new_experiences_amount_list):
+        agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
+        ckpt_filepath = f"{expr_run_dir}/ckpts/ckpt_{ckpt_name}"
+        print(f"===> Loading the checkpoint {ckpt_filepath} to collect new {num_steps} experiences")
+        load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath)
 
-        if not done or "TimeLimit.truncated" in info:
-            mask = 1.0
-        else:
-            mask = 0.0
+        observation, done = env.reset(), False
+        for i in tqdm.tqdm(
+            range(1, num_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
+        ):
+            action = agent.sample_actions(observation)
+            next_observation, reward, done, info = env.step(action)
 
-        replay_buffer.insert(
-            dict(
-                observations=observation,
-                actions=action,
-                rewards=reward,
-                masks=mask,
-                dones=done,
-                next_observations=next_observation,
+            if not done or "TimeLimit.truncated" in info:
+                mask = 1.0
+            else:
+                mask = 0.0
+
+            replay_buffer.insert(
+                dict(
+                    observations=observation,
+                    actions=action,
+                    rewards=reward,
+                    masks=mask,
+                    dones=done,
+                    next_observations=next_observation,
+                )
             )
-        )
-        observation = next_observation
+            observation = next_observation
 
-        if done:
-            observation, done = env.reset(), False     
+            if done:
+                observation, done = env.reset(), False
+
 
     replay_buffer_metadata = {}
     replay_buffer_metadata["policy_learning_dir"] = FLAGS.run_name
