@@ -46,24 +46,17 @@ def get_num_short_name(steps) -> str:
 def get_dataset_tag(dataset_name, env_name):
     dataset_tag = ""
     if dataset_name != "d4rl":
-        pieces_of_name = dataset_name.split("_") # e.g., new_1000000_by_ckpt_1000000
+        pieces_of_name = dataset_name.split("_") # e.g., new_1000000_experiences_by_1000000 or new_400000_experiences_by_600000_200000
         num_experiences = int(pieces_of_name[1])
         dataset_tag = f"N{int(num_experiences/1e3)}k"
-        ckpt_step = int(pieces_of_name[-1])
-        if ckpt_step==0:
-            dataset_tag += "R0"
-        elif ckpt_step>1e6:
-            dataset_tag += f"E{int(ckpt_step/1e3)}k"
-        else:
-            dataset_tag += f"M{int(ckpt_step/1e3)}k"
-        '''
-        ckpt_name = "".join(pieces_of_name[-2:])
-        for behavior_policy_tag in self_collect_dataset_tags:
-            if ckpt_name in self_collect_dataset_tags[behavior_policy_tag]:
-                dataset_tag = f"N{get_num_short_name(num_experiences)}"
-                dataset_tag += behavior_policy_tag + get_num_short_name(int(pieces_of_name[-1]))
-                break
-        '''
+        for ckpt_step in pieces_of_name[4:]:
+            ckpt_step = int(ckpt_step)
+            if ckpt_step==0:
+                dataset_tag += "R0"
+            elif ckpt_step>1e6:
+                dataset_tag += f"E{int(ckpt_step/1e3)}k"
+            else:
+                dataset_tag += f"M{int(ckpt_step/1e3)}k"
     else:
         dataset_tag = "d4rl"
     return dataset_tag
@@ -125,7 +118,7 @@ def main(_):
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
     offline_algo="iql"
     dataset_names = FLAGS.dataset_name.split(",")
-    dataset_tag = "".join([get_dataset_tag(dn, FLAGS.env_name) for dn in dataset_names])
+    dataset_tag = "_".join([get_dataset_tag(dn, FLAGS.env_name) for dn in dataset_names])
     if (FLAGS.dataset_name!="d4rl") and FLAGS.use_behavior_policy_buffer:
         dataset_tag += "B"
     project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_off_{offline_algo}_{dataset_tag}_{expr_time_str}"
