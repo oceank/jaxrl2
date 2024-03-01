@@ -19,7 +19,7 @@ from jaxrl2.agents import SACLearner
 from jaxrl2.data import ReplayBuffer
 from jaxrl2.evaluation import evaluate
 from jaxrl2.wrappers import wrap_gym
-from jaxrl2.utils.save_load_agent import save_agent, load_agent, equal_SAC_agents
+from jaxrl2.utils.save_load_agent import save_agent, load_agent, equal_SAC_agents,initialize_SAC_agent_from_IQL_agent
 from jaxrl2.utils.save_expr_log import save_log
 
 from tensorboardX import SummaryWriter
@@ -52,6 +52,7 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_string("env_name", "HalfCheetah-v2", "Environment name.")
 flags.DEFINE_string("save_dir", "./tmp/", "Tensorboard logging dir.")
+flags.DEFINE_string("loaded_model_name", "", "The name of the loaded model, including the experiment name and ckpt that are separated by a colon")
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("eval_episodes", 10, "Number of episodes used for evaluation.")
 flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
@@ -87,7 +88,16 @@ def main(_):
     # create the project directory
     now = datetime.now()
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
-    project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_on_sac_{expr_time_str}"
+    project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_on_sac"
+    if FLAGS.loaded_model_name != "":
+        lmn_pieces = FLAGS.loaded_model_name.split(":")
+        loaded_model_expriment_name = lmn_pieces[0]
+        behavior_policy_dataset_tag = loaded_model_expriment_name.split("_")[4]
+        loaded_model_ckpt = lmn_pieces[1] # e.g., "ckpt_1000000"
+        # remove '_' in loaded_model_ckpt for the consistency of experiment name
+        loaded_model_ckpt_name = loaded_model_ckpt[:4] + loaded_model_ckpt[5:]
+        project_name += f"_{behavior_policy_dataset_tag}-{loaded_model_ckpt_name}"
+    project_name += f"_{expr_time_str}"
     project_dir = os.path.join(FLAGS.save_dir, project_name)
     os.makedirs(project_dir, exist_ok=True)
 
@@ -124,6 +134,9 @@ def main(_):
     kwargs = dict(FLAGS.config)
     agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    if FLAGS.loaded_model_name:
+        loading_agent_filepath = os.path.join(FLAGS.save_dir, loaded_model_expriment_name, "ckpts", loaded_model_ckpt)
+        initialize_SAC_agent_from_IQL_agent(orbax_checkpointer, agent, loading_agent_filepath)
 
     # evaluate the initial agent
     eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
@@ -152,10 +165,17 @@ def main(_):
     replay_buffer.seed(FLAGS.seed)
 
     observation, done = env.reset(), False
+    max_steps = FLAGS.max_steps
+    # if loading a prior model to initialize the online learning, assume it happens in the middle of an online path
+    # such that the steps for setting up the initial replay buffer should be substrcted from the budget of steps
+    if FLAGS.loaded_model_name != "":
+        max_steps -= FLAGS.start_training
     for i in tqdm.tqdm(
-        range(1, FLAGS.max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
+        range(1, max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
     ):
-        if i < FLAGS.start_training:
+        if i < FLAGS.start_training and (FLAGS.loaded_model_name == ""):
+            # randomly sample actions to collect experiences to initialize the replay buffer if a proir policy is not provided;
+            # otherwise, use the provided policy to collect the initial experiences.
             action = env.action_space.sample()
         else:
             action = agent.sample_actions(observation)
@@ -187,10 +207,10 @@ def main(_):
             batch = replay_buffer.sample(FLAGS.batch_size)
             update_info = agent.update(batch)
 
-            if i % FLAGS.log_interval == 0:
+            if (i % FLAGS.log_interval == 0) or (i == max_steps):
                 save_log(summary_writer, update_info, i, "training", use_wandb=FLAGS.wandb)
 
-        if i % FLAGS.eval_interval == 0:
+        if (i % FLAGS.eval_interval == 0) or (i == max_steps):
             eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
             expr_now = datetime.now()
             expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")

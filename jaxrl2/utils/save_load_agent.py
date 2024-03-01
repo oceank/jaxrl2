@@ -1,4 +1,5 @@
 # for saving JAX models
+import copy
 import jax
 from flax.training import orbax_utils
 import orbax.checkpoint
@@ -13,7 +14,7 @@ def save_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True):
     else:
         raise ValueError("The agent to save must be an instance of SACLearner or IQLearner")
 
-def load_agent(orbax_checkpointer, agent, ckpt_filepath):
+def load_agent(orbax_checkpointer, agent, ckpt_filepath,):
     if isinstance(agent, SACLearner):
         load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath)
     elif isinstance(agent, IQLLearner):
@@ -81,7 +82,15 @@ def load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath):
     agent._temp = ckpt_restored["temp"]
     agent._target_critic_params = ckpt_restored["target_critic_params"]
     agent._rng = ckpt_restored["rng"]
-    
+
+def initialize_SAC_agent_from_IQL_agent(orbax_checkpointer, sac_agent, iql_ckpt_filepath):
+    #orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    ckpt_restored = orbax_checkpointer.restore(iql_ckpt_filepath)
+    sac_agent._actor.replace(params=ckpt_restored["actor"]["params"])
+    sac_agent._critic.replace(params=ckpt_restored["critic"]["params"])
+    sac_agent._target_critic_params = copy.deepcopy(ckpt_restored["critic"]["params"])
+    sac_agent._rng = ckpt_restored["rng"] 
+
 def equal_SAC_agents(agent1, agent2):
     equal_actors = jax.tree_util.tree_all(jax.tree_map(lambda x, y: (x == y).all(), agent1._actor.params, agent2._actor.params))
     equal_critics = jax.tree_util.tree_all(jax.tree_map(lambda x, y: (x == y).all(), agent1._critic.params, agent2._critic.params))
