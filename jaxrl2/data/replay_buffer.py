@@ -5,7 +5,7 @@ import gym.spaces
 import numpy as np
 import h5py
 
-from jaxrl2.data.dataset import Dataset, DatasetDict
+from jaxrl2.data.dataset import Dataset, DatasetDict, _subselect
 
 
 def _init_replay_dict(
@@ -72,6 +72,14 @@ class ReplayBuffer(Dataset):
         self._insert_index = (self._insert_index + 1) % self._capacity
         self._size = min(self._size + 1, self._capacity)
 
+    # insert a batch of data by inserting one by one sequentially
+    # ToDo: a more efficient way to insert a batch of data, which needs to carefully deal with the circular buffer
+    def insert_chunk(self, dataset_dict: DatasetDict, index: Union[np.ndarray, list]):
+        for i in index:
+            self.insert(_subselect(dataset_dict, np.array(i)))
+
+    # assume each value in dataset_dict is a numpy array
+    # the originial code seems to assume that values in dataset_dict could dictionaries. not sure when this would be the case
     def save_dataset_h5py(self, filepath: str, compression='gzip', metadata: Optional[Dict[str, Union[str, int, float]]] = None):
         with h5py.File(filepath, 'w') as hfile:
             for k, v in self.dataset_dict.items():
