@@ -6,12 +6,15 @@ import numpy as np
 from jaxrl2.data.dataset import Dataset
 
 
-def evaluate(agent, env: gym.Env, num_episodes: int) -> Dict[str, float]:
+def evaluate(agent, env: gym.Env, num_episodes: int, random_agent:bool=False) -> Dict[str, float]:
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=num_episodes)
     for _ in range(num_episodes):
         observation, done = env.reset(), False
         while not done:
-            action = agent.eval_actions(observation)
+            if random_agent:
+                action = env.action_space.sample()
+            else:
+                action = agent.eval_actions(observation)
             observation, _, done, _ = env.step(action)
 
     return {"return": np.mean(env.return_queue), "length": np.mean(env.length_queue)}
