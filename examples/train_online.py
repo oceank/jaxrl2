@@ -3,6 +3,7 @@ import os
 # XLA GPU Deterministic Ops: https://github.com/google/jax/discussions/10674
 os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
 
+import shutil
 import subprocess
 import json
 import gym
@@ -62,6 +63,7 @@ flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
 flags.DEFINE_integer(
     "start_training", int(1e4), "Number of training steps to start training."
 )
+flags.DEFINE_integer("save_best_n", 1, "Save the best n models when save_best is true")
 flags.DEFINE_boolean("save_best", True, "Save the best model.")
 flags.DEFINE_boolean("save_ckpt", True, "Save the checkpoints.")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
@@ -139,9 +141,21 @@ def main(_):
     save_log(summary_writer, eval_info, 0, "evaluation", use_wandb=FLAGS.wandb)
     # save the initial best agent
     if FLAGS.save_best:
-        best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
-        best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":0}
-        save_agent(orbax_checkpointer, agent, 0, best_ckpt_filepath)
+        small_budget = 100000
+        if "kitchen" in FLAGS.env_name:
+            small_budget = 200000
+        #best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
+        #best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":0}
+        best_ckpt_dir = f"{project_dir}/ckpts/best_ckpts_B{FLAGS.max_steps}"
+        top1_ckpt_filepath = f"{best_ckpt_dir}/top1"
+        best_ckpt_performance = {"top1":{"return":eval_info["return"], "step":0, "filepath":top1_ckpt_filepath}}
+        save_agent(orbax_checkpointer, agent, 0, top1_ckpt_filepath)
+        for k in range(2, FLAGS.save_best_n+1, 1):
+            topk = f"top{k}"
+            topk_ckpt_filepath = f"{best_ckpt_dir}/{topk}"
+            best_ckpt_performance[topk] = {"return": float("-inf"), "step":-1, "filepath":topk_ckpt_filepath}
+            save_agent(orbax_checkpointer, agent, -k+1, topk_ckpt_filepath)
+
     # save the checkpoint at step 0: the initial agent
     if FLAGS.save_ckpt:
         ckpt_filepath = f"{project_dir}/ckpts/ckpt_0"
@@ -203,11 +217,57 @@ def main(_):
             save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
 
             # save the current best agent
-            if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
-                best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
-                best_ckpt_performance["best_ckpt_step"] = i
-                save_agent(orbax_checkpointer, agent, i, best_ckpt_filepath)
-                save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
+            # assume there best n models are saved and the current model is better than the top kth model but not (k+1)th model
+            # remove the top n model in drive
+            # rename the top kth model to be top (k+1)th model until k=n-1
+            # save the current model as the top kth model
+            if FLAGS.save_best:
+                # find the first top model that performs better than the current model
+                first_top_k = 1
+                while first_top_k <= FLAGS.save_best_n:
+                    if best_ckpt_performance[f"top{first_top_k}"]["return"] >= eval_info["return"]:
+                        first_top_k += 1
+                    else:
+                        break
+                if first_top_k <= FLAGS.save_best_n:
+                    #shutil.rmtree(best_ckpt_performance[f"top{FLAGS.save_best_n}"]["filepath"])
+                    for k in range(FLAGS.save_best_n-1, first_top_k, -1):
+                        source = f"top{k}"
+                        target = f"top{k+1}"
+                        best_ckpt_performance[target]["return"] = best_ckpt_performance[source]["return"]
+                        best_ckpt_performance[target]["step"] = best_ckpt_performance[source]["step"]
+                        source_fp = best_ckpt_performance[source]["filepath"]
+                        target_fp = best_ckpt_performance[target]["filepath"]
+                        for (root, dirs, file) in os.walk(source_fp):
+                            for f in file:
+                                os.replace(os.path.join(source_fp, f), os.path.join(target_fp, f))
+                        #shutil.move(source_fp, target_fp)
+                    topk = f"top{first_top_k}"
+                    best_ckpt_performance[topk]["return"] = eval_info["return"]
+                    best_ckpt_performance[topk]["step"] = i
+                    save_agent(orbax_checkpointer, agent, i, best_ckpt_performance[topk]["filepath"])
+
+
+                # when the best ckpt is improved, log its performance
+                if first_top_k == 1:
+                    save_log(summary_writer, {"best_ckpt_return":best_ckpt_performance["top1"]["return"]}, i, "evaluation", use_wandb=FLAGS.wandb)
+
+                # if the current step is 100k, i.e., i == 100000, save the current top n models into best_ckpts_B100000 folder
+                if (i%small_budget)==0:
+                    best_ckpt_dir_sb = f"{project_dir}/ckpts/best_ckpts_B{small_budget}"
+                    for k in range(1, FLAGS.save_best_n+1, 1):
+                        topk = f"top{k}"
+                        topk_ckpt_filepath = f"{best_ckpt_dir_sb}/{topk}"
+                        shutil.copytree(best_ckpt_performance[topk]["filepath"], topk_ckpt_filepath)
+                    with open(os.path.join(best_ckpt_dir_sb, "top_n_performace.csv"), "w") as f:
+                        f.write(f"Name\tPerformance\tStep\n")
+                        for k in range(1, FLAGS.save_best_n+1, 1):
+                            topk = f"top{k}"
+                            rt = best_ckpt_performance[topk]["return"]
+                            sp = best_ckpt_performance[topk]["step"]
+                            f.write(f"{topk}\t{rt}\t{sp}\n")
+
+
             # save the checkpoint at step i
             if FLAGS.save_ckpt and ((i<1e5 and i%1e4==0) or (i % FLAGS.ckpt_interval == 0)):
                 ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
@@ -219,7 +279,15 @@ def main(_):
         save_agent(orbax_checkpointer, agent, i, ckpt_filepath)
 
     if FLAGS.save_best:
-        eval_file.write(f"**Best Policy**\t{best_ckpt_performance['best_ckpt_step']}\t{best_ckpt_performance['best_ckpt_return']}\n")
+        with open(os.path.join(best_ckpt_dir, "top_n_performace.csv"), "w") as f:
+            f.write(f"Name\tPerformance\tStep\n")
+            for k in range(1, FLAGS.save_best_n+1, 1):
+                topk = f"top{k}"
+                rt = best_ckpt_performance[topk]["return"]
+                sp = best_ckpt_performance[topk]["step"]
+                f.write(f"{topk}\t{rt}\t{sp}\n")
+
+        eval_file.write(f"**Best Policy**\t{best_ckpt_performance['top1']['step']}\t{best_ckpt_performance['top1']['return']}\n")
     eval_file.close()
 
     if not FLAGS.wandb: # close the tensorboard writer. wandb will close it automatically
