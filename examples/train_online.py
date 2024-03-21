@@ -26,6 +26,19 @@ from jaxrl2.utils.save_expr_log import save_log
 from tensorboardX import SummaryWriter
 from datetime import datetime
 
+top_n_checkpoints_all_envs = {
+    "Walker2d": [80000, 800000],
+    "Hopper": [80000, 800000],
+    "HalfCheetah": [80000, 800000],
+    "Ant": [80000, 800000],
+    "hammer": [80000, 800000],
+    "pen": [80000, 800000],
+    "relocate": [80000, 800000],
+    "door": [80000, 800000],
+    "maze2d": [80000, 800000],
+    "kitchen": [160000, 1600000],
+}
+
 def save_machine_info(filename):
     """
     Saves the output of hostname and nvidia-smi to a file.
@@ -141,12 +154,9 @@ def main(_):
     save_log(summary_writer, eval_info, 0, "evaluation", use_wandb=FLAGS.wandb)
     # save the initial best agent
     if FLAGS.save_best:
-        small_budget = 100000
-        if "kitchen" in FLAGS.env_name:
-            small_budget = 200000
         #best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
         #best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":0}
-        best_ckpt_dir = f"{project_dir}/ckpts/best_ckpts_B{FLAGS.max_steps}"
+        best_ckpt_dir = f"{project_dir}/ckpts/best_ckpts_{FLAGS.max_steps}"
         top1_ckpt_filepath = f"{best_ckpt_dir}/top1"
         best_ckpt_performance = {"top1":{"return":eval_info["return"], "step":0, "filepath":top1_ckpt_filepath}}
         save_agent(orbax_checkpointer, agent, 0, top1_ckpt_filepath)
@@ -168,6 +178,12 @@ def main(_):
 
     observation, done = env.reset(), False
     max_steps = FLAGS.max_steps
+
+    top_n_checkpoints = []
+    for key in top_n_checkpoints_all_envs:
+        if key in FLAGS.env_name:
+            top_n_checkpoints = top_n_checkpoints_all_envs[key]
+            break
 
     for i in tqdm.tqdm(
         range(1, max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
@@ -222,7 +238,7 @@ def main(_):
             # rename the top kth model to be top (k+1)th model until k=n-1
             # save the current model as the top kth model
             if FLAGS.save_best:
-                # find the first top model that performs better than the current model
+                # find the first top model that performs worse than the current model
                 first_top_k = 1
                 while first_top_k <= FLAGS.save_best_n:
                     if best_ckpt_performance[f"top{first_top_k}"]["return"] >= eval_info["return"]:
@@ -231,7 +247,8 @@ def main(_):
                         break
                 if first_top_k <= FLAGS.save_best_n:
                     #shutil.rmtree(best_ckpt_performance[f"top{FLAGS.save_best_n}"]["filepath"])
-                    for k in range(FLAGS.save_best_n-1, first_top_k, -1):
+                    for move_iter in range(FLAGS.save_best_n-first_top_k):
+                        k = FLAGS.save_best_n - 1 - move_iter
                         source = f"top{k}"
                         target = f"top{k+1}"
                         best_ckpt_performance[target]["return"] = best_ckpt_performance[source]["return"]
@@ -252,14 +269,15 @@ def main(_):
                 if first_top_k == 1:
                     save_log(summary_writer, {"best_ckpt_return":best_ckpt_performance["top1"]["return"]}, i, "evaluation", use_wandb=FLAGS.wandb)
 
-                # if the current step is 100k, i.e., i == 100000, save the current top n models into best_ckpts_B100000 folder
-                if (i%small_budget)==0:
-                    best_ckpt_dir_sb = f"{project_dir}/ckpts/best_ckpts_B{small_budget}"
+                # if the current step, e.g. 80000, is one of predefined step to save top n policies,
+                # save the current top n models into best_ckpts_80000 folder under the ckpts folder
+                if i in top_n_checkpoints:
+                    best_ckpt_dir_i = f"{project_dir}/ckpts/best_ckpts_{i}"
                     for k in range(1, FLAGS.save_best_n+1, 1):
                         topk = f"top{k}"
-                        topk_ckpt_filepath = f"{best_ckpt_dir_sb}/{topk}"
+                        topk_ckpt_filepath = f"{best_ckpt_dir_i}/{topk}"
                         shutil.copytree(best_ckpt_performance[topk]["filepath"], topk_ckpt_filepath)
-                    with open(os.path.join(best_ckpt_dir_sb, "top_n_performace.csv"), "w") as f:
+                    with open(os.path.join(best_ckpt_dir_i, "top_n_performace.csv"), "w") as f:
                         f.write(f"Name\tPerformance\tStep\n")
                         for k in range(1, FLAGS.save_best_n+1, 1):
                             topk = f"top{k}"

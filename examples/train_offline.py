@@ -49,7 +49,11 @@ def get_dataset_tag(dataset_name, env_name):
         pieces_of_name = dataset_name.split("_") # e.g., new_1000000_experiences_by_1000000 or new_400000_experiences_by_600000_200000
         num_experiences = int(pieces_of_name[1])
         dataset_tag = f"N{int(num_experiences/1e3)}k"
-        for ckpt_step in pieces_of_name[4:]:
+        if "top" in pieces_of_name[-1]:
+            ckpt_names = [pieces_of_name[4]]
+        else:
+            ckpt_names = pieces_of_name[4:]
+        for ckpt_step in ckpt_names:
             ckpt_step = int(ckpt_step)
             if ckpt_step==0:
                 dataset_tag += "R0"
@@ -57,6 +61,8 @@ def get_dataset_tag(dataset_name, env_name):
                 dataset_tag += f"E{int(ckpt_step/1e3)}k"
             else:
                 dataset_tag += f"M{int(ckpt_step/1e3)}k"
+        if "top" in pieces_of_name[-1]:
+            dataset_tag += pieces_of_name[-1]
     else:
         dataset_tag = "d4rl"
     return dataset_tag

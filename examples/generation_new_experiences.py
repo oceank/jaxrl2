@@ -19,11 +19,13 @@ flags.DEFINE_string("env_name", "HalfCheetah-v2", "Environment name.")
 flags.DEFINE_string("save_dir", "./tmp/", "Tensorboard logging dir.")
 flags.DEFINE_string("run_name", "run", "The folder name for a saved run of policy learning.")
 flags.DEFINE_string("replay_buffer_filename", "final_replay_buffer.h5py", "The filename of a saved replay buffer.")
-flags.DEFINE_string("ckpt_name", "ckpt_0", "The name of the saved checkpoint where the policy is used as the behavior policy.")
+flags.DEFINE_string("ckpt_name", "0", "The name (step) of the saved checkpoint where the policy is used as the behavior policy.")
+flags.DEFINE_string("top_n_dirname", "", "The folder name for saved checkpoints or top_n policies.")
 
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("num_steps", int(1e6), "Number of new experiences to collect.")
 
+flags.DEFINE_integer("top_n_policies_used", 0, "Use the top n policies to collect experiences. default is 0, indicating not using top n policies.")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
 flags.DEFINE_boolean("save_video", False, "Save videos during evaluation.")
 config_flags.DEFINE_config_file(
@@ -53,14 +55,19 @@ def main(_):
     )
     replay_buffer.seed(FLAGS.seed)
 
-    ckpt_names = FLAGS.ckpt_name.split("_")
+    if FLAGS.top_n_policies_used == 0:
+        ckpt_names = FLAGS.ckpt_name.split("_")
+        ckpt_fp_pre = f"{expr_run_dir}/ckpts/ckpt_"
+    else:
+        ckpt_names = list(range(1, FLAGS.top_n_policies_used+1))
+        ckpt_fp_pre = f"{expr_run_dir}/ckpts/{FLAGS.top_n_dirname}/top"
     new_experiences_per_agent = int(FLAGS.num_steps//len(ckpt_names))
     new_experiences_amount_list = [FLAGS.num_steps-new_experiences_per_agent*(len(ckpt_names)-1)] + [new_experiences_per_agent]*(len(ckpt_names)-1)
     print(f"Use the checkpoints: {ckpt_names}")
     print(f"New experiences to collect: {new_experiences_amount_list}")
     for ckpt_name, num_steps in zip(ckpt_names,new_experiences_amount_list):
         agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
-        ckpt_filepath = f"{expr_run_dir}/ckpts/ckpt_{ckpt_name}"
+        ckpt_filepath = f"{ckpt_fp_pre}{ckpt_name}"
         print(f"===> Loading the checkpoint {ckpt_filepath} to collect new {num_steps} experiences")
         load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath)
 
@@ -91,13 +98,15 @@ def main(_):
             if done:
                 observation, done = env.reset(), False
 
-
+    # case 1: 50000_70000
+    # case 2: 80000_top3
+    behavior_policy_name_tag = FLAGS.ckpt_name if FLAGS.top_n_policies_used == 0 else f"{FLAGS.top_n_dirname[11:]}_top{FLAGS.top_n_policies_used}"
     replay_buffer_metadata = {}
     replay_buffer_metadata["policy_learning_dir"] = FLAGS.run_name
-    replay_buffer_metadata["policy_ckpt_name"] = FLAGS.ckpt_name
+    replay_buffer_metadata["policy_ckpt_name"] = behavior_policy_name_tag
     replay_buffer_metadata["seed"] = FLAGS.seed
     replay_buffer_metadata["env_name"] = FLAGS.env_name
-    experience_collection_tag = f"new_{FLAGS.num_steps}_experiences_by_{FLAGS.ckpt_name}"
+    experience_collection_tag = f"new_{FLAGS.num_steps}_experiences_by_{behavior_policy_name_tag}"
     replay_buffer_filepath = f"{expr_run_dir}/{experience_collection_tag}.h5py"
     replay_buffer.save_dataset_h5py(replay_buffer_filepath, metadata=replay_buffer_metadata)
     plot_episode_returns(
