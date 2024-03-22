@@ -36,7 +36,7 @@ top_n_checkpoints_all_envs = {
     "relocate": [80000, 800000],
     "door": [80000, 800000],
     "maze2d": [80000, 800000],
-    "kitchen": [160000, 1600000],
+    "kitchen": [160000, 800000],
 }
 
 def save_machine_info(filename):
