@@ -264,11 +264,6 @@ def main(_):
                     best_ckpt_performance[topk]["step"] = i
                     save_agent(orbax_checkpointer, agent, i, best_ckpt_performance[topk]["filepath"])
 
-
-                # when the best ckpt is improved, log its performance
-                if first_top_k == 1:
-                    save_log(summary_writer, {"best_ckpt_return":best_ckpt_performance["top1"]["return"]}, i, "evaluation", use_wandb=FLAGS.wandb)
-
                 # if the current step, e.g. 80000, is one of predefined step to save top n policies,
                 # save the current top n models into best_ckpts_80000 folder under the ckpts folder
                 if i in top_n_checkpoints:
@@ -285,6 +280,8 @@ def main(_):
                             sp = best_ckpt_performance[topk]["step"]
                             f.write(f"{topk}\t{rt}\t{sp}\n")
 
+            # log the best model performance so far
+            save_log(summary_writer, {"best_ckpt_return":best_ckpt_performance["top1"]["return"]}, i, "evaluation", use_wandb=FLAGS.wandb)
 
             # save the checkpoint at step i
             if FLAGS.save_ckpt and ((i<1e5 and i%1e4==0) or (i % FLAGS.ckpt_interval == 0)):
