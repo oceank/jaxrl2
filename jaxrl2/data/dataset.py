@@ -112,7 +112,7 @@ class Dataset(object):
         test_dataset_dict = _subselect(self.dataset_dict, test_index)
         return Dataset(train_dataset_dict), Dataset(test_dataset_dict)
 
-    def _trajectory_boundaries_and_returns(self) -> Tuple[list, list, list]:
+    def _trajectory_boundaries_and_returns(self, record_last_traj_return_if_not_done=False) -> Tuple[list, list, list]:
         episode_starts = [0]
         episode_ends = []
 
@@ -128,7 +128,10 @@ class Dataset(object):
                 if i + 1 < len(self):
                     episode_starts.append(i + 1)
                 episode_return = 0.0
-
+        # If the last trajectory is not done, record the last trajectory return as requested
+        if len(episode_starts) > len(episode_ends) and record_last_traj_return_if_not_done:
+            episode_returns.append(episode_return)
+            episode_ends.append(len(self))
         return episode_starts, episode_ends, episode_returns
 
     def filter(
@@ -167,12 +170,19 @@ class Dataset(object):
     def get_episode_returns(self):
         return self._trajectory_boundaries_and_returns()[2]
 
-def plot_episode_returns(dataset, bin=100, title=None, fig_path="episode_returns.png"):
+def plot_episode_returns(dataset, bin=100, title=None, fig_path="episode_returns.png", ep_probs=None):
     episode_returns = dataset.get_episode_returns()
-    plt.hist(episode_returns, bins=100, edgecolor='black')
+    label = "Episode Return"
+    if ep_probs is not None:
+        indx = np.random.choice(range(len(episode_returns)), size=len(episode_returns), p=ep_probs)
+        episode_returns = [episode_returns[i] for i in indx]
+        label = "Episode Return (Reweighted)"
+
+    plt.hist(episode_returns, bins=100, edgecolor='black', label=label)
 
     plt.xlabel("Episode Return")
     plt.ylabel("Frequency")
+    plt.legend()
     if not title:
         plt.title(f"{title}")
     plt.savefig(fig_path)

@@ -16,7 +16,7 @@ from ml_collections import config_flags
 from ml_collections.config_dict.config_dict import ConfigDict
 
 from jaxrl2.agents import BCLearner, IQLLearner
-from jaxrl2.data import D4RLDataset, ReplayBuffer, Dataset, plot_episode_returns
+from jaxrl2.data import D4RLDataset, ReplayBuffer, Dataset, ReturnWeightedReplayBufferWrapper, AdvantageWeightedReplayBufferWrapper, plot_episode_returns
 from jaxrl2.evaluation import evaluate
 from jaxrl2.wrappers import wrap_gym
 from jaxrl2.utils.save_load_agent import save_agent
@@ -95,6 +95,7 @@ flags.DEFINE_string("env_name", "halfcheetah-expert-v2", "Environment name.")
 flags.DEFINE_string("save_dir", "./tmp/", "Tensorboard logging dir.")
 flags.DEFINE_string("dataset_name", "d4rl", "the source name of offline dataset.")
 flags.DEFINE_string("dataset_dir", None, "the path of the directory that contains the dataset (not from d4rl).")
+flags.DEFINE_string("dataset_reweighting", None, "the reweighting method and parameter for the dataset.") # "AW_alpha" (alpha=0), "RW_alpha"  (alpha=0.1)
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("eval_episodes", 10, "Number of episodes used for evaluation.")
 flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
@@ -127,6 +128,8 @@ def main(_):
     dataset_tag = "_".join([get_dataset_tag(dn, FLAGS.env_name) for dn in dataset_names])
     if (FLAGS.dataset_name!="d4rl") and FLAGS.use_behavior_policy_buffer:
         dataset_tag += "B"
+    if FLAGS.dataset_reweighting is not None:
+        dataset_tag += "".join(FLAGS.dataset_reweighting.split("_"))
     project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_off_{offline_algo}_{dataset_tag}_{expr_time_str}"
     project_dir = os.path.join(FLAGS.save_dir, project_name)
     os.makedirs(project_dir, exist_ok=True)
@@ -193,6 +196,28 @@ def main(_):
         dataset.dataset_dict["rewards"] *= 100
     elif FLAGS.env_name.split("-")[0] in ["hopper", "halfcheetah", "walker2d"]:
         dataset.normalize_returns(scaling=1000)
+
+    # dataset reweighting
+    if FLAGS.dataset_reweighting is not None:
+        reweighting_method, reweighting_param = FLAGS.dataset_reweighting.split("_")
+        reweighting_param = float(reweighting_param) 
+        if reweighting_method == "AW":
+            cache_size = int(FLAGS.batch_size*FLAGS.max_steps) # int(1e6)
+            dataset = AdvantageWeightedReplayBufferWrapper(
+                dataset, alpha=reweighting_param, cache_size=cache_size)
+        elif reweighting_method == "RW":
+            cache_size = int(FLAGS.batch_size*FLAGS.max_steps) # int(1e6)
+            dataset = ReturnWeightedReplayBufferWrapper(
+                dataset, alpha=reweighting_param, cache_size=cache_size)
+        else:
+            raise ValueError(f"Unknown reweighting method: {reweighting_method}")
+    
+        plot_episode_returns(
+        dataset,
+        bin=100,
+        title=f"{FLAGS.dataset_name}_{FLAGS.dataset_reweighting}",
+        fig_path=f"{project_dir}/{FLAGS.dataset_name}_{FLAGS.dataset_reweighting}.png",
+        ep_probs=dataset.episode_probs)
 
     # create the agent and initialize the orbax checkpointer for saving the agent periodically
     kwargs = dict(FLAGS.config.model_config)
