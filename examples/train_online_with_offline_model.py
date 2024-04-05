@@ -291,6 +291,9 @@ def main(_):
     observation, done = env.reset(), False
     max_steps = FLAGS.max_steps
     pol_sel_key = jax.random.PRNGKey(FLAGS.seed)
+    num_gradient_steps = max_steps - FLAGS.online_start_step + 1
+    pol_sel_key, subkey = jax.random.split(pol_sel_key)
+    agent_sel_probs = jax.random.uniform(subkey, (num_gradient_steps,))
     for i in tqdm.tqdm(
         range(FLAGS.online_start_step, max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
     ):
@@ -305,17 +308,10 @@ def main(_):
         else:
             raise ValueError(f"Invalid value for FLAGS.experience_collection_mode: {FLAGS.experience_collection_mode}")
 
-        if online_agent_sel_prob==1.0:
+        if agent_sel_probs[i-FLAGS.online_start_step] <= online_agent_sel_prob:
             action = agent_online.sample_actions(observation)
-        elif online_agent_sel_prob==0.0:
-            action = agent_offline.sample_actions(observation)
         else:
-            pol_sel_key, subkey = jax.random.split(pol_sel_key)
-            agent_sel_prob = jax.random.uniform(subkey)
-            if agent_sel_prob <= online_agent_sel_prob:
-                action = agent_online.sample_actions(observation)
-            else:
-                action = agent_offline.sample_actions(observation)
+            action = agent_offline.sample_actions(observation)
 
         next_observation, reward, done, info = env.step(action)
 
