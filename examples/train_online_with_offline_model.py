@@ -64,11 +64,11 @@ def cal_online_agent_sel_prob(agent_online_perf:float, agent_offline_perf:float,
     if offline_perf_diff <= 0:
         online_agent_sel_prob = 1.0
     elif online_perf_diff <= 0:
-        online_agent_sel_prob = 0.1
+        online_agent_sel_prob = 0.0
     else:
         online_agent_sel_prob = agent_online_perf/(agent_online_perf+agent_offline_perf)
-        if online_agent_sel_prob < 0.2:
-            online_agent_sel_prob = 0.2
+        if online_agent_sel_prob < 0.1:
+            online_agent_sel_prob = 0.1
     return online_agent_sel_prob
 
 Training_Testing_Seed_Gap = 10000
@@ -76,9 +76,11 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_string("env_name", "HalfCheetah-v2", "Environment name.")
 flags.DEFINE_string("save_dir", "./tmp/", "Tensorboard logging dir.")
+flags.DEFINE_string("online_continual_learning_mode", "finetunning", "The approach used for online continual learning after an offline procedure. Default is finetunning")
+flags.DEFINE_string("offline_learning_dataset_folder_name", "", "The name of the folder containing the offline learning dataset")
 flags.DEFINE_string("loaded_online_model_name", "", "The name of the loaded online model, including the experiment name and ckpt that are separated by a colon")
 flags.DEFINE_string("loaded_offline_model_name", "", "The name of the loaded offline model, including the experiment name and ckpt that are separated by a colon")
-flags.DEFINE_string("experience_collection_mode", "equal", "The mode of experience collection for online learning. Default is equal, indicating online-learned model and offline-learned model equally collecting new experiences. Currently, its value can be one of  ['equal', 'weighted']")
+flags.DEFINE_string("experience_collection_mode", "equal", "The mode of experience collection for online learning. Default is equal, indicating online-learned model and offline-learned model equally collecting new experiences. Currently, its value can be one of  ['equal', 'weighted', 'online']")
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("eval_episodes", 10, "Number of episodes used for evaluation.")
 flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
@@ -86,16 +88,16 @@ flags.DEFINE_integer("eval_interval", 5000, "Eval interval.")
 flags.DEFINE_integer("ckpt_interval", 100000, "Checkpoint interval.")
 flags.DEFINE_integer("batch_size", 256, "Mini batch size.")
 flags.DEFINE_integer("online_start_step", int(1), "Number of the start step of online training.")
-flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
+flags.DEFINE_integer("max_steps", int(1e6), "The total budget of steps for interacting with the env.")
 flags.DEFINE_integer(
-    "start_training", int(1e4), "Number of training steps to start training."
+    "start_training", 1, "Number of training steps to start training."
 )
 flags.DEFINE_boolean("add_offline_dataset_to_buffer", True, "add the offline dataset to the current replay buffer.")
-flags.DEFINE_boolean("train_online_policy_with_flashed_steps", True, "train the online policy with the number steps that are used to collect experiences for offline RL")
+flags.DEFINE_boolean("train_online_policy_with_flashed_steps", False, "train the online policy with the number steps that are used to collect experiences for offline RL")
 flags.DEFINE_boolean("save_best", True, "Save the best model.")
-flags.DEFINE_boolean("save_ckpt", True, "Save the checkpoints.")
+flags.DEFINE_boolean("save_ckpt", False, "Save the checkpoints.")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
-flags.DEFINE_boolean("wandb", True, "Log wandb.")
+flags.DEFINE_boolean("wandb", False, "Log wandb.")
 flags.DEFINE_boolean("save_video", False, "Save videos during evaluation.")
 config_flags.DEFINE_config_file(
     "config",
@@ -124,22 +126,28 @@ def main(_):
     now = datetime.now()
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
     project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_on_sac"
-    online_initial_model_tag = "randomInit"
-    online_ckpt_step = 0
-    if FLAGS.loaded_online_model_name != "":
-        pieces = FLAGS.loaded_online_model_name.split(":")
-        online_model_experiment_name = pieces[0]
-        online_ckpt_name = pieces[1]
-        loading_online_agent_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, "ckpts", online_ckpt_name)
-        online_initial_model_tag = online_ckpt_name[:4] + online_ckpt_name[5:] + "Init"
-        online_ckpt_step = int(online_ckpt_name[5:])
-        assert (online_ckpt_step+1)==FLAGS.online_start_step
     
+    online_initial_model_tag = "randomInit"
+    online_ckpt_step = FLAGS.online_start_step-1
+    if FLAGS.online_continual_learning_mode != "finetunning":
+        if FLAGS.loaded_online_model_name != "":
+            pieces = FLAGS.loaded_online_model_name.split(":")
+            online_model_experiment_name = pieces[0]
+            online_ckpt_name = pieces[1]
+            loading_online_agent_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, "ckpts", online_ckpt_name)
+            online_initial_model_tag = online_ckpt_name[:4] + online_ckpt_name[5:] + "Init"
+            if online_ckpt_name != "best_ckpt":
+                online_ckpt_step = int(online_ckpt_name[5:]) # if online_ckpt_name is not "best_ckpt", it is like "ckpt_1000000
+            FLAGS.offline_learning_dataset_folder_name = online_model_experiment_name
+    else:
+        online_initial_model_tag = "offlineInit"
+
     pieces = FLAGS.loaded_offline_model_name.split(":")
     offline_model_experiment_name = pieces[0]
     behavior_policy_dataset_tag = offline_model_experiment_name.split("_")[4]
     offline_model_ckpt = pieces[1] # e.g., "ckpt_1000000"
     behavior_policy_dataset_filename = pieces[2]
+    online_ckpt_step = int(behavior_policy_dataset_filename.split("_")[4])
 
     loading_offline_agent_filepath = os.path.join(FLAGS.save_dir, offline_model_experiment_name, "ckpts", offline_model_ckpt)
     # remove '_' in loaded_model_ckpt for the consistency of experiment name
@@ -190,14 +198,23 @@ def main(_):
     load_agent(orbax_checkpointer, agent_offline, loading_offline_agent_filepath)
     eval_info_agent_offline = evaluate(agent_offline, eval_env, num_episodes=FLAGS.eval_episodes)
     agent_offline_perf = eval_info_agent_offline['return']
-    ## Load the online-learned agent if provided, otherwise, randomly initialize a new online agent  
-    kwargs = dict(FLAGS.config)
-    agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
-    eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes, random_agent=True)
+    ## When finetunning, the offline agent is used to initialize the online agent
+    ## otheerse, randomly initiaze the online agent using SAC learner and then load the online-learned agent if provided, otherwise 
+    if FLAGS.online_continual_learning_mode == "finetunning":
+        # use the offline learner to initialize the online agent for continual learning
+        # here assume that the offline RL can run in the online mode
+        agent_online = globals()[FLAGS.config_offline.model_constructor](
+            FLAGS.seed, env.observation_space.sample(), env.action_space.sample(), **kwargs_offline
+        )
+        load_agent(orbax_checkpointer, agent_online, loading_offline_agent_filepath)
+    else:
+        kwargs = dict(FLAGS.config)
+        agent_online = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
+        if FLAGS.loaded_online_model_name != "":
+            load_agent(orbax_checkpointer, agent_online, loading_online_agent_filepath)
+    eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes, random_agent=True)
     agent_random_perf = eval_info['return']
-    if FLAGS.loaded_online_model_name != "":
-        load_agent(orbax_checkpointer, agent, loading_online_agent_filepath)
-    eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
+    eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
     agent_online_perf = eval_info['return']
     ## save the initial performance of the online agent and the offline agent
     eval_filepath = f"{project_dir}/eval_ave_episode_return.txt"
@@ -215,11 +232,11 @@ def main(_):
     if FLAGS.save_best:
         best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
         best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":(FLAGS.online_start_step-1)}
-        save_agent(orbax_checkpointer, agent, online_ckpt_step, best_ckpt_filepath)
+        save_agent(orbax_checkpointer, agent_online, FLAGS.online_start_step-1, best_ckpt_filepath)
     ## save the checkpoint at step, FLAGS.online_start_step-1: the initial agent
     if FLAGS.save_ckpt:
         ckpt_filepath = f"{project_dir}/ckpts/ckpt_{FLAGS.online_start_step-1}"
-        save_agent(orbax_checkpointer, agent, online_ckpt_step, ckpt_filepath)
+        save_agent(orbax_checkpointer, agent_online, FLAGS.online_start_step-1, ckpt_filepath)
 
     # Initialize the replay buffer with the previously saved one, and add the offline dataset to the replay buffer as necessary
     replay_buffer = ReplayBuffer(
@@ -233,25 +250,25 @@ def main(_):
         replay_buffer.insert_chunk(prev_buffer_dict, list(range(0, online_ckpt_step, 1)))
     ## append the dataset for offline learning into the replay buffer if FLAGS.add_offline_dataset_to_buffer is true
     offline_dataset_size = int(behavior_policy_dataset_filename.split("_")[1])
-    current_consumed_steps = FLAGS.online_start_step + offline_dataset_size-1
+    current_consumed_steps = FLAGS.online_start_step - 1
     if FLAGS.add_offline_dataset_to_buffer:
-        offline_dataset_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, behavior_policy_dataset_filename)        
+        offline_dataset_filepath = os.path.join(FLAGS.save_dir, FLAGS.offline_learning_dataset_folder_name, f"{behavior_policy_dataset_filename}.h5py")        
         offline_dataset, metadata_offline = ReplayBuffer.load_dataset_h5py(offline_dataset_filepath)
         replay_buffer.insert_chunk(offline_dataset, list(range(0, offline_dataset_size, 1)))
         ### train the online agent with the current replay buffer (including the dataset from offline learning)
         ### with the flashed steps for offline learning if FLAGS.train_online_policy_with_flashed_steps is true
         if FLAGS.train_online_policy_with_flashed_steps:
             for i in tqdm.tqdm(
-                range(FLAGS.online_start_step, current_consumed_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
+                range(FLAGS.online_start_step-offline_dataset_size, FLAGS.online_start_step), smoothing=0.1, disable=not FLAGS.tqdm
             ):
                 batch = replay_buffer.sample(FLAGS.batch_size)
-                update_info = agent.update(batch)
+                update_info = agent_online.update(batch)
 
                 if (i % FLAGS.log_interval == 0) or (i == current_consumed_steps):
                     save_log(summary_writer, update_info, i, "training", use_wandb=FLAGS.wandb)
 
                 if (i % FLAGS.eval_interval == 0) or (i == current_consumed_steps):
-                    eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
+                    eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
                     expr_now = datetime.now()
                     expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
                     step = i
@@ -263,13 +280,12 @@ def main(_):
                     if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
                         best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
                         best_ckpt_performance["best_ckpt_step"] = i
-                        save_agent(orbax_checkpointer, agent, i, best_ckpt_filepath)
+                        save_agent(orbax_checkpointer, agent_online, i, best_ckpt_filepath)
                         save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
                     # save the checkpoint at step i
                     if FLAGS.save_ckpt and ((i<1e5 and i%1e4==0) or (i % FLAGS.ckpt_interval == 0)):
                         ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
-                        save_agent(orbax_checkpointer, agent, i, ckpt_filepath)
-    FLAGS.online_start_step = current_consumed_steps+1
+                        save_agent(orbax_checkpointer, agent_online, i, ckpt_filepath)
 
     # Continue online learning
     observation, done = env.reset(), False
@@ -284,14 +300,22 @@ def main(_):
             online_agent_sel_prob = 0.5
         elif FLAGS.experience_collection_mode == "weighted":
             online_agent_sel_prob = cal_online_agent_sel_prob(agent_online_perf, agent_offline_perf, agent_random_perf)
+        elif FLAGS.experience_collection_mode == "online":
+            online_agent_sel_prob = 1.0
         else:
             raise ValueError(f"Invalid value for FLAGS.experience_collection_mode: {FLAGS.experience_collection_mode}")
-        pol_sel_key, subkey = jax.random.split(pol_sel_key)
-        agent_sel_prob = jax.random.uniform(subkey)
-        if agent_sel_prob < online_agent_sel_prob:
-            action = agent.sample_actions(observation)
-        else:
+
+        if online_agent_sel_prob==1.0:
+            action = agent_online.sample_actions(observation)
+        elif online_agent_sel_prob==0.0:
             action = agent_offline.sample_actions(observation)
+        else:
+            pol_sel_key, subkey = jax.random.split(pol_sel_key)
+            agent_sel_prob = jax.random.uniform(subkey)
+            if agent_sel_prob <= online_agent_sel_prob:
+                action = agent_online.sample_actions(observation)
+            else:
+                action = agent_offline.sample_actions(observation)
 
         next_observation, reward, done, info = env.step(action)
 
@@ -317,15 +341,16 @@ def main(_):
             decoder = {"r": "return", "l": "length", "t": "time"}
             save_log(summary_writer, info["episode"], i, "training", use_wandb=FLAGS.wandb, decoder=decoder)
 
-        if i >= FLAGS.start_training:
+        if i >= (FLAGS.online_start_step+FLAGS.start_training):
             batch = replay_buffer.sample(FLAGS.batch_size)
-            update_info = agent.update(batch)
+            update_info = agent_online.update(batch)
 
             if (i % FLAGS.log_interval == 0) or (i == max_steps):
                 save_log(summary_writer, update_info, i, "training", use_wandb=FLAGS.wandb)
 
         if (i % FLAGS.eval_interval == 0) or (i == max_steps):
-            eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
+            eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
+            agent_online_perf = eval_info['return']
             expr_now = datetime.now()
             expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
             step = i
@@ -337,17 +362,17 @@ def main(_):
             if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
                 best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
                 best_ckpt_performance["best_ckpt_step"] = i
-                save_agent(orbax_checkpointer, agent, i, best_ckpt_filepath)
+                save_agent(orbax_checkpointer, agent_online, i, best_ckpt_filepath)
                 save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
             #### save the checkpoint at step i
             if FLAGS.save_ckpt and ((i<1e5 and i%1e4==0) or (i % FLAGS.ckpt_interval == 0)):
                 ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
-                save_agent(orbax_checkpointer, agent, i, ckpt_filepath)
+                save_agent(orbax_checkpointer, agent_online, i, ckpt_filepath)
 
     # save the final checkpoint
     if not FLAGS.save_ckpt:
         ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
-        save_agent(orbax_checkpointer, agent, i, ckpt_filepath)
+        save_agent(orbax_checkpointer, agent_online, i, ckpt_filepath)
 
     if FLAGS.save_best:
         eval_file.write(f"**Best Policy**\t{best_ckpt_performance['best_ckpt_step']}\t{best_ckpt_performance['best_ckpt_return']}\n")
