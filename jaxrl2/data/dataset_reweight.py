@@ -49,8 +49,10 @@ class ReturnWeightedReplayBufferWrapper(Wrapper):
         return self.episode_returns
 
     def minmax_normalization(self, x):
-        assert x.max() != x.min()
-        return (x - x.min()) / (x.max() - x.min())
+        if x.max() == x.min():
+            return x - x.min()
+        else: # x.max() != x.min()
+            return (x - x.min()) / (x.max() - x.min())
 
     def _compute_sample_probs(self):
         G = np.asarray(self.episode_returns)
