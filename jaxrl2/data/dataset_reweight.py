@@ -36,7 +36,10 @@ class ReturnWeightedReplayBufferWrapper(Wrapper):
         self.transition_counts_per_episode = [(end - start) for start, end in zip(self.episode_starts, self.episode_ends)]
         self.total_transitions = sum(self.transition_counts_per_episode)
         
-        self.sample_probs = self._compute_sample_probs()
+        if max(self.episode_returns) == min(self.episode_returns):
+            self.sample_probs = self._comple_sample_probs_for_equal_weighted_episode()
+        else:
+            self.sample_probs = self._compute_sample_probs()
         assert self.total_transitions == len(self.sample_probs)
 
         # Compute the probability of each episode for visualizing reweigted dataset
@@ -54,13 +57,21 @@ class ReturnWeightedReplayBufferWrapper(Wrapper):
         else: # x.max() != x.min()
             return (x - x.min()) / (x.max() - x.min())
 
+    def _comple_sample_probs_for_equal_weighted_episode(self):
+        T = np.asarray(self.transition_counts_per_episode)
+        N_eps = len(self.episode_returns)
+        w_it = np.asarray(reduce(lambda x, y: x + y, [[1.0/(N_eps*T_i)] * T_i for T_i in T]))
+        w_it /= w_it.sum() # Avoid numerical errors
+        return w_it
+
     def _compute_sample_probs(self):
         G = np.asarray(self.episode_returns)
         G = self.minmax_normalization(G) # section 4.2 in the paper
         T = np.asarray(self.transition_counts_per_episode)
         G_it = np.asarray(reduce(lambda x, y: x + y, [[G_i] * T_i for G_i, T_i in zip(G, T)]))
-        w_it = (G_it - G_it.min()) / (G_it.max() - G_it.min())
-        w_it = scipy.special.softmax(G_it / self.alpha)       
+        G_it = (G_it - G_it.min()) / (G_it.max() - G_it.min())
+        w_it = scipy.special.softmax(G_it / self.alpha)
+        w_it /= w_it.sum() # Avoid numerical errors    
         return w_it
 
     def _generate_cache(self, cache_size: int):
