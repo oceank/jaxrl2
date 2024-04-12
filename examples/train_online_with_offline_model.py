@@ -16,7 +16,7 @@ from ml_collections.config_dict.config_dict import ConfigDict
 
 import jaxrl2.extra_envs.dm_control_suite
 from jaxrl2.agents import SACLearner, IQLLearner
-from jaxrl2.data import ReplayBuffer
+from jaxrl2.data import ReplayBuffer, Dataset
 from jaxrl2.evaluation import evaluate
 from jaxrl2.wrappers import wrap_gym
 from jaxrl2.utils.save_load_agent import save_agent, load_agent
@@ -92,7 +92,7 @@ flags.DEFINE_integer("max_steps", int(1e6), "The total budget of steps for inter
 flags.DEFINE_integer(
     "start_training", 1, "Number of training steps to start training."
 )
-flags.DEFINE_boolean("add_offline_dataset_to_buffer", True, "add the offline dataset to the current replay buffer.")
+
 flags.DEFINE_boolean("train_online_policy_with_flashed_steps", False, "train the online policy with the number steps that are used to collect experiences for offline RL")
 flags.DEFINE_boolean("save_best", True, "Save the best model.")
 flags.DEFINE_boolean("save_ckpt", False, "Save the checkpoints.")
@@ -248,44 +248,45 @@ def main(_):
         prev_replay_buffer_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, "final_replay_buffer.h5py")
         prev_buffer_dict, metadata_online = ReplayBuffer.load_dataset_h5py(prev_replay_buffer_filepath)
         replay_buffer.insert_chunk(prev_buffer_dict, list(range(0, online_ckpt_step, 1)))
-    ## append the dataset for offline learning into the replay buffer if FLAGS.add_offline_dataset_to_buffer is true
-    offline_dataset_size = int(behavior_policy_dataset_filename.split("_")[1])
-    current_consumed_steps = FLAGS.online_start_step - 1
-    if FLAGS.add_offline_dataset_to_buffer:
-        offline_dataset_filepath = os.path.join(FLAGS.save_dir, FLAGS.offline_learning_dataset_folder_name, f"{behavior_policy_dataset_filename}.h5py")        
-        offline_dataset, metadata_offline = ReplayBuffer.load_dataset_h5py(offline_dataset_filepath)
-        replay_buffer.insert_chunk(offline_dataset, list(range(0, offline_dataset_size, 1)))
-        ### train the online agent with the current replay buffer (including the dataset from offline learning)
-        ### with the flashed steps for offline learning if FLAGS.train_online_policy_with_flashed_steps is true
-        if FLAGS.train_online_policy_with_flashed_steps:
-            for i in tqdm.tqdm(
-                range(FLAGS.online_start_step-offline_dataset_size, FLAGS.online_start_step), smoothing=0.1, disable=not FLAGS.tqdm
-            ):
-                batch = replay_buffer.sample(FLAGS.batch_size)
-                update_info = agent_online.update(batch)
 
-                if (i % FLAGS.log_interval == 0) or (i == current_consumed_steps):
-                    save_log(summary_writer, update_info, i, "training", use_wandb=FLAGS.wandb)
+    ## load the offline dataset as a source of replay buffer
+    offline_dataset_filepath = os.path.join(FLAGS.save_dir, FLAGS.offline_learning_dataset_folder_name, f"{behavior_policy_dataset_filename}.h5py")        
+    offline_dataset, metadata_offline = ReplayBuffer.load_dataset_h5py(offline_dataset_filepath)
+    replay_buffer_offline = Dataset(dataset_dict=offline_dataset, seed=FLAGS.seed)
+        
+    ## train the online agent with the current replay buffer (including the dataset from offline learning)
+    ## with the flashed steps for offline learning if FLAGS.train_online_policy_with_flashed_steps is true
+    if FLAGS.train_online_policy_with_flashed_steps:
+        offline_dataset_size = int(behavior_policy_dataset_filename.split("_")[1])
+        current_consumed_steps = FLAGS.online_start_step - 1
+        for i in tqdm.tqdm(
+            range(FLAGS.online_start_step-offline_dataset_size, FLAGS.online_start_step), smoothing=0.1, disable=not FLAGS.tqdm
+        ):
+            batch = replay_buffer.sample(FLAGS.batch_size)
+            update_info = agent_online.update(batch)
 
-                if (i % FLAGS.eval_interval == 0) or (i == current_consumed_steps):
-                    eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
-                    expr_now = datetime.now()
-                    expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
-                    step = i
-                    eval_file.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
-                    eval_file.flush()
-                    save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
+            if (i % FLAGS.log_interval == 0) or (i == current_consumed_steps):
+                save_log(summary_writer, update_info, i, "training", use_wandb=FLAGS.wandb)
 
-                    # save the current best agent
-                    if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
-                        best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
-                        best_ckpt_performance["best_ckpt_step"] = i
-                        save_agent(orbax_checkpointer, agent_online, i, best_ckpt_filepath)
-                        save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
-                    # save the checkpoint at step i
-                    if FLAGS.save_ckpt and ((i<1e5 and i%1e4==0) or (i % FLAGS.ckpt_interval == 0)):
-                        ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
-                        save_agent(orbax_checkpointer, agent_online, i, ckpt_filepath)
+            if (i % FLAGS.eval_interval == 0) or (i == current_consumed_steps):
+                eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
+                expr_now = datetime.now()
+                expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
+                step = i
+                eval_file.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
+                eval_file.flush()
+                save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
+
+                # save the current best agent
+                if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
+                    best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
+                    best_ckpt_performance["best_ckpt_step"] = i
+                    save_agent(orbax_checkpointer, agent_online, i, best_ckpt_filepath)
+                    save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
+                # save the checkpoint at step i
+                if FLAGS.save_ckpt and ((i<1e5 and i%1e4==0) or (i % FLAGS.ckpt_interval == 0)):
+                    ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
+                    save_agent(orbax_checkpointer, agent_online, i, ckpt_filepath)
 
     # Continue online learning
     observation, done = env.reset(), False
@@ -338,7 +339,12 @@ def main(_):
             save_log(summary_writer, info["episode"], i, "training", use_wandb=FLAGS.wandb, decoder=decoder)
 
         if i >= (FLAGS.online_start_step+FLAGS.start_training):
-            batch = replay_buffer.sample(FLAGS.batch_size)
+            batch_size_offline_buffer = int(FLAGS.batch_size//2) # symmetrical sampling of two buffers
+            batch_size_online_buffer = FLAGS.batch_size - batch_size_offline_buffer
+            batch_offline_buffer = replay_buffer_offline.sample(batch_size_offline_buffer)
+            batch_online_buffer = replay_buffer.sample(batch_size_online_buffer)
+            # merge thes two batches by stacking them
+            batch = Dataset.merge(batch_offline_buffer, batch_online_buffer)
             update_info = agent_online.update(batch)
 
             if (i % FLAGS.log_interval == 0) or (i == max_steps):

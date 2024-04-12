@@ -48,6 +48,20 @@ def _sample(
         raise TypeError("Unsupported type.")
     return batch
 
+# assume dataset_dict1 and dataset_dict2 have the same keys
+def _merge(dataset_dict1: DatasetDict, dataset_dict2: DatasetDict) -> DatasetDict:
+    new_dataset_dict = {}
+    
+    for k, v in dataset_dict1.items():
+        if isinstance(v, dict):
+            new_v = _merge(v, dataset_dict1[k])
+        elif isinstance(v, np.ndarray):
+            new_v = np.concatenate((v, dataset_dict2[k]), axis=0)
+        else:
+            raise TypeError("Unsupported type.")
+        new_dataset_dict[k] = new_v
+    return new_dataset_dict
+
 
 class Dataset(object):
     def __init__(self, dataset_dict: DatasetDict, seed: Optional[int] = None):
@@ -169,6 +183,9 @@ class Dataset(object):
     
     def get_episode_returns(self):
         return self._trajectory_boundaries_and_returns()[2]
+    
+    def merge(self, dataset_dict1: DatasetDict, dataset_dict2: DatasetDict) -> DatasetDict:
+        return _merge(dataset_dict1, dataset_dict2)
 
 def plot_episode_returns(dataset, bin=100, title=None, fig_path="episode_returns.png", ep_probs=None):
     episode_returns = dataset.get_episode_returns()
