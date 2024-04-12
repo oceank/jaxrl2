@@ -66,6 +66,8 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_string("env_name", "HalfCheetah-v2", "Environment name.")
 flags.DEFINE_string("save_dir", "./tmp/", "Tensorboard logging dir.")
+flags.DEFINE_string("loaded_online_model_name", "",
+                    "The name of the loaded online model, including the experiment name and ckpt that are separated by a colon")
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("eval_episodes", 10, "Number of episodes used for evaluation.")
 flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
@@ -99,11 +101,21 @@ config_flags.DEFINE_config_file(
 # 3. Seed the replay buffer
 
 def main(_):
+
+    online_initial_model_tag = "randomInit"
+    if FLAGS.loaded_online_model_name != "":
+        pieces = FLAGS.loaded_online_model_name.split(":")
+        online_model_experiment_name = pieces[0]
+        online_ckpt_name = pieces[1]
+        loading_online_agent_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, "ckpts", online_ckpt_name)
+        online_initial_model_tag = online_ckpt_name[:4] + online_ckpt_name[5:] + "Init"
+        online_ckpt_step = int(online_ckpt_name[5:]) # if online_ckpt_name is not "best_ckpt", it is like "ckpt_1000000
+
     # create the project directory
     now = datetime.now()
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
     project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_on_sac"
-    project_name += f"_{expr_time_str}"
+    project_name += f"_{online_initial_model_tag}_{expr_time_str}"
     project_dir = os.path.join(FLAGS.save_dir, project_name)
     os.makedirs(project_dir, exist_ok=True)
 
@@ -140,14 +152,17 @@ def main(_):
     kwargs = dict(FLAGS.config)
     agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    if FLAGS.loaded_online_model_name != "":
+        load_agent(orbax_checkpointer, agent, loading_online_agent_filepath)
 
     # evaluate the initial agent
     eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
     eval_filepath = f"{project_dir}/eval_ave_episode_return.txt"
+    start_step = 1 if FLAGS.loaded_online_model_name == "" else online_ckpt_step+1
     with open(eval_filepath, "w") as f:
         expr_now = datetime.now()
         expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
-        step = 0
+        step = start_step-1
         f.write(f"Experiment Time\tStep\tReturn\n")
         f.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
     eval_file = open(eval_filepath, "a")
@@ -158,8 +173,8 @@ def main(_):
         #best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":0}
         best_ckpt_dir = f"{project_dir}/ckpts/best_ckpts_{FLAGS.max_steps}"
         top1_ckpt_filepath = f"{best_ckpt_dir}/top1"
-        best_ckpt_performance = {"top1":{"return":eval_info["return"], "step":0, "filepath":top1_ckpt_filepath}}
-        save_agent(orbax_checkpointer, agent, 0, top1_ckpt_filepath)
+        best_ckpt_performance = {"top1":{"return":eval_info["return"], "step":(start_step-1), "filepath":top1_ckpt_filepath}}
+        save_agent(orbax_checkpointer, agent, (start_step-1), top1_ckpt_filepath)
         for k in range(2, FLAGS.save_best_n+1, 1):
             topk = f"top{k}"
             topk_ckpt_filepath = f"{best_ckpt_dir}/{topk}"
@@ -168,13 +183,17 @@ def main(_):
 
     # save the checkpoint at step 0: the initial agent
     if FLAGS.save_ckpt:
-        ckpt_filepath = f"{project_dir}/ckpts/ckpt_0"
-        save_agent(orbax_checkpointer, agent, 0, ckpt_filepath)
+        ckpt_filepath = f"{project_dir}/ckpts/ckpt_{start_step-1}"
+        save_agent(orbax_checkpointer, agent, (start_step-1), ckpt_filepath)
 
     replay_buffer = ReplayBuffer(
         env.observation_space, env.action_space, FLAGS.max_steps
     )
     replay_buffer.seed(FLAGS.seed)
+    if FLAGS.loaded_online_model_name:
+        prev_replay_buffer_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, "final_replay_buffer.h5py")
+        prev_buffer_dict, metadata_online = ReplayBuffer.load_dataset_h5py(prev_replay_buffer_filepath)
+        replay_buffer.insert_chunk(prev_buffer_dict, list(range(0, online_ckpt_step, 1)))
 
     observation, done = env.reset(), False
     max_steps = FLAGS.max_steps
@@ -186,7 +205,7 @@ def main(_):
             break
 
     for i in tqdm.tqdm(
-        range(1, max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
+        range(start_step, max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
     ):
         if i < FLAGS.start_training:
             action = env.action_space.sample()
