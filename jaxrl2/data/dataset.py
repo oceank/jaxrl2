@@ -183,8 +183,9 @@ class Dataset(object):
     
     def get_episode_returns(self):
         return self._trajectory_boundaries_and_returns()[2]
-    
-    def merge(self, dataset_dict1: DatasetDict, dataset_dict2: DatasetDict) -> DatasetDict:
+
+
+def merge_dataset_dicts(dataset_dict1: DatasetDict, dataset_dict2: DatasetDict) -> DatasetDict:
         return _merge(dataset_dict1, dataset_dict2)
 
 def plot_episode_returns(dataset, bin=100, title=None, fig_path="episode_returns.png", ep_probs=None):
