@@ -148,44 +148,7 @@ def main(_):
     eval_env = wrap_gym(eval_env, rescale_actions=True)
     eval_env.seed(FLAGS.seed + Training_Testing_Seed_Gap)
 
-    # Create the agent and initialize the orbax checkpointer for saving the agent periodically
-    kwargs = dict(FLAGS.config)
-    agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
-    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    if FLAGS.loaded_online_model_name != "":
-        load_agent(orbax_checkpointer, agent, loading_online_agent_filepath)
-
-    # evaluate the initial agent
-    eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
-    eval_filepath = f"{project_dir}/eval_ave_episode_return.txt"
-    start_step = 1 if FLAGS.loaded_online_model_name == "" else online_ckpt_step+1
-    with open(eval_filepath, "w") as f:
-        expr_now = datetime.now()
-        expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
-        step = start_step-1
-        f.write(f"Experiment Time\tStep\tReturn\n")
-        f.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
-    eval_file = open(eval_filepath, "a")
-    save_log(summary_writer, eval_info, 0, "evaluation", use_wandb=FLAGS.wandb)
-    # save the initial best agent
-    if FLAGS.save_best:
-        #best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
-        #best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":0}
-        best_ckpt_dir = f"{project_dir}/ckpts/best_ckpts_{FLAGS.max_steps}"
-        top1_ckpt_filepath = f"{best_ckpt_dir}/top1"
-        best_ckpt_performance = {"top1":{"return":eval_info["return"], "step":(start_step-1), "filepath":top1_ckpt_filepath}}
-        save_agent(orbax_checkpointer, agent, (start_step-1), top1_ckpt_filepath)
-        for k in range(2, FLAGS.save_best_n+1, 1):
-            topk = f"top{k}"
-            topk_ckpt_filepath = f"{best_ckpt_dir}/{topk}"
-            best_ckpt_performance[topk] = {"return": float("-inf"), "step":-1, "filepath":topk_ckpt_filepath}
-            save_agent(orbax_checkpointer, agent, -k+1, topk_ckpt_filepath)
-
-    # save the checkpoint at step 0: the initial agent
-    if FLAGS.save_ckpt:
-        ckpt_filepath = f"{project_dir}/ckpts/ckpt_{start_step-1}"
-        save_agent(orbax_checkpointer, agent, (start_step-1), ckpt_filepath)
-
+    # create the replay buffer or initialized from the previous replay buffer
     replay_buffer = ReplayBuffer(
         env.observation_space, env.action_space, FLAGS.max_steps
     )
@@ -194,6 +157,58 @@ def main(_):
         prev_replay_buffer_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, "final_replay_buffer.h5py")
         prev_buffer_dict, metadata_online = ReplayBuffer.load_dataset_h5py(prev_replay_buffer_filepath)
         replay_buffer.insert_chunk(prev_buffer_dict, list(range(0, online_ckpt_step, 1)))
+
+    # Create the agent and initialize the orbax checkpointer for saving the agent periodically
+    kwargs = dict(FLAGS.config)
+    agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
+    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    if FLAGS.loaded_online_model_name != "":
+        env_and_buffer_rngs, agent_perf = load_agent(orbax_checkpointer, agent, loading_online_agent_filepath)
+        env.np_random = env_and_buffer_rngs["env.np_random"]
+        eval_env.np_random = env_and_buffer_rngs["eval_env.np_random"]
+        env.action_space.np_random = env_and_buffer_rngs["env.action_space.np_random"]
+        replay_buffer.np_random = env_and_buffer_rngs["replay_buffer.np_random"]
+    else:
+        # env.np_random, eval_env.np_random, env.action_space.np_random, replay_buffer.np_random
+        rand_generators = [env.np_random, eval_env.np_random, env.action_space.np_random, replay_buffer.np_random]
+        rand_generators_names = ["env.np_random", "eval_env.np_random", "env.action_space.np_random", "replay_buffer.np_random"]
+        rand_generators_dict = {}
+        for rand_generator, name in zip(rand_generators, rand_generators_names):
+            rand_generators_dict[name] = rand_generator
+        env_and_buffer_rngs = {"env_buffer_rngs":rand_generators_dict}
+        # evaluate the initial agent
+        eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
+        agent_perf = eval_info['return']
+
+    # save the performance of the initial agent
+    start_step = 1 if FLAGS.loaded_online_model_name == "" else online_ckpt_step+1
+    eval_filepath = f"{project_dir}/eval_ave_episode_return.txt"
+    with open(eval_filepath, "w") as f:
+        expr_now = datetime.now()
+        expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
+        step = start_step-1
+        f.write(f"Experiment Time\tStep\tReturn\n")
+        f.write(f"{expr_time_now_str}\t{step}\t{agent_perf}\n")
+
+    eval_file = open(eval_filepath, "a")
+    save_log(summary_writer, eval_info, start_step-1, "evaluation", use_wandb=FLAGS.wandb)
+    # save the initial best agent
+    if FLAGS.save_best:
+        best_ckpt_dir = f"{project_dir}/ckpts/best_ckpts_{FLAGS.max_steps}"
+        top1_ckpt_filepath = f"{best_ckpt_dir}/top1"
+        best_ckpt_performance = {"top1":{"return":agent_perf, "step":(start_step-1), "filepath":top1_ckpt_filepath}}
+        save_agent(orbax_checkpointer, agent, (start_step-1), top1_ckpt_filepath, agent_perf=agent_perf, **env_and_buffer_rngs)
+        for k in range(2, FLAGS.save_best_n+1, 1):
+            topk = f"top{k}"
+            topk_ckpt_filepath = f"{best_ckpt_dir}/{topk}"
+            best_ckpt_performance[topk] = {"return": float("-inf"), "step":-1, "filepath":topk_ckpt_filepath}
+            save_agent(orbax_checkpointer, agent, -k+1, topk_ckpt_filepath, agent_perf=float('-inf'), **env_and_buffer_rngs)
+
+    # save the checkpoint at step 0: the initial agent
+    if FLAGS.save_ckpt:
+        ckpt_filepath = f"{project_dir}/ckpts/ckpt_{start_step-1}"
+        save_agent(orbax_checkpointer, agent, (start_step-1), ckpt_filepath, agent_perf=agent_perf, **env_and_buffer_rngs)
+
 
     observation, done = env.reset(), False
     max_steps = FLAGS.max_steps
@@ -244,10 +259,11 @@ def main(_):
 
         if (i % FLAGS.eval_interval == 0) or (i == max_steps):
             eval_info = evaluate(agent, eval_env, num_episodes=FLAGS.eval_episodes)
+            agent_perf = eval_info['return']
             expr_now = datetime.now()
             expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
             step = i
-            eval_file.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
+            eval_file.write(f"{expr_time_now_str}\t{step}\t{agent_perf}\n")
             eval_file.flush()
             save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
 
@@ -260,7 +276,7 @@ def main(_):
                 # find the first top model that performs worse than the current model
                 first_top_k = 1
                 while first_top_k <= FLAGS.save_best_n:
-                    if best_ckpt_performance[f"top{first_top_k}"]["return"] >= eval_info["return"]:
+                    if best_ckpt_performance[f"top{first_top_k}"]["return"] >= agent_perf:
                         first_top_k += 1
                     else:
                         break
@@ -279,9 +295,13 @@ def main(_):
                                 os.replace(os.path.join(source_fp, f), os.path.join(target_fp, f))
                         #shutil.move(source_fp, target_fp)
                     topk = f"top{first_top_k}"
-                    best_ckpt_performance[topk]["return"] = eval_info["return"]
+                    best_ckpt_performance[topk]["return"] = agent_perf
                     best_ckpt_performance[topk]["step"] = i
-                    save_agent(orbax_checkpointer, agent, i, best_ckpt_performance[topk]["filepath"])
+                    save_agent(
+                        orbax_checkpointer, agent, i, 
+                        best_ckpt_performance[topk]["filepath"], 
+                        agent_perf = best_ckpt_performance[topk]['return']
+                        **env_and_buffer_rngs)
 
                 # if the current step, e.g. 80000, is one of predefined step to save top n policies,
                 # save the current top n models into best_ckpts_80000 folder under the ckpts folder
@@ -305,12 +325,14 @@ def main(_):
             # save the checkpoint at step i
             if FLAGS.save_ckpt and ((i<1e5 and i%1e4==0) or (i % FLAGS.ckpt_interval == 0)):
                 ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
-                save_agent(orbax_checkpointer, agent, i, ckpt_filepath)
+                save_agent(orbax_checkpointer, agent, i, ckpt_filepath,
+                           agent_perf=agent_perf, **env_and_buffer_rngs)
 
     # save the final agent
     if not FLAGS.save_ckpt:
         ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
-        save_agent(orbax_checkpointer, agent, i, ckpt_filepath)
+        save_agent(orbax_checkpointer, agent, i, ckpt_filepath,
+                   agent_perf=agent_perf, **env_and_buffer_rngs)
 
     if FLAGS.save_best:
         with open(os.path.join(best_ckpt_dir, "top_n_performace.csv"), "w") as f:

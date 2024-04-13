@@ -6,24 +6,26 @@ import orbax.checkpoint
 
 from jaxrl2.agents import SACLearner, DrQLearner, BCLearner, IQLLearner
 
-def save_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True):
+# kwargs: random generators of environments and replay buffer sampling.
+#           This is for resuming online training.
+def save_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True, agent_perf=None, **kwargs):
     if isinstance(agent, SACLearner):
-        save_SAC_agent(orbax_checkpointer, agent, i, ckpt_filepath, force)
+        save_SAC_agent(orbax_checkpointer, agent, i, ckpt_filepath, force, agent_perf, **kwargs)
     elif isinstance(agent, IQLLearner):
-        save_IQL_agent(orbax_checkpointer, agent, i, ckpt_filepath, force)
+        save_IQL_agent(orbax_checkpointer, agent, i, ckpt_filepath, force, agent_perf, **kwargs)
     else:
         raise ValueError("The agent to save must be an instance of SACLearner or IQLearner")
 
 def load_agent(orbax_checkpointer, agent, ckpt_filepath,):
     if isinstance(agent, SACLearner):
-        load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath)
+        return load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath)
     elif isinstance(agent, IQLLearner):
-        load_IQL_agent(orbax_checkpointer, agent, ckpt_filepath)
+        return load_IQL_agent(orbax_checkpointer, agent, ckpt_filepath)
     else:
         raise ValueError("The agent to load must be an instance of SACLearner or IQLearner")
     
 
-def save_IQL_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True):
+def save_IQL_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True, agent_perf=None, **kwargs):
     ckpt = {
         "step": i,
         "actor": agent._actor,
@@ -31,12 +33,14 @@ def save_IQL_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True):
         "value": agent._value,
         "target_critic_params": agent._target_critic_params,
         "rng": agent._rng,
+        "agent_perf": agent_perf,
     }
+    ckpt.update(kwargs)
     #orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     save_args = orbax_utils.save_args_from_target(ckpt)
     orbax_checkpointer.save(ckpt_filepath, ckpt, save_args=save_args, force=force)
 
-def load_IQL_agent(orbax_checkpointer, agent, ckpt_filepath):
+def load_IQL_agent(orbax_checkpointer, agent, ckpt_filepath) -> dict:
     target = {
         "step": 0,
         "actor": agent._actor,
@@ -52,21 +56,27 @@ def load_IQL_agent(orbax_checkpointer, agent, ckpt_filepath):
     agent._value = ckpt_restored["value"]
     agent._target_critic_params = ckpt_restored["target_critic_params"]
     agent._rng = ckpt_restored["rng"]
+    env_and_buffer_rngs = {}
+    if "env_and_buffer_rngs" in ckpt_restored:
+        env_and_buffer_rngs = ckpt_restored["env_and_buffer_rngs"]
+    return env_and_buffer_rngs, ckpt_restored["agent_perf"]
 
-def save_SAC_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True):
+def save_SAC_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True, agent_perf=None, **kwargs):
     ckpt = {
         "step": i,
         "actor": agent._actor,
         "critic": agent._critic,
         "temp": agent._temp,
         "target_critic_params": agent._target_critic_params,
-        "rng": agent._rng
+        "rng": agent._rng,
+        "agent_perf": agent_perf,
     }
+    ckpt.update(kwargs)
     #orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     save_args = orbax_utils.save_args_from_target(ckpt)
     orbax_checkpointer.save(ckpt_filepath, ckpt, save_args=save_args, force=force)
 
-def load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath):
+def load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath) -> dict:
     target = {
         "step": 0,
         "actor": agent._actor,
@@ -82,6 +92,10 @@ def load_SAC_agent(orbax_checkpointer, agent, ckpt_filepath):
     agent._temp = ckpt_restored["temp"]
     agent._target_critic_params = ckpt_restored["target_critic_params"]
     agent._rng = ckpt_restored["rng"]
+    env_and_buffer_rngs = {}
+    if "env_and_buffer_rngs" in ckpt_restored:
+        env_and_buffer_rngs = ckpt_restored["env_and_buffer_rngs"]
+    return env_and_buffer_rngs, ckpt_restored["agent_perf"]
 
 def initialize_SAC_agent_from_IQL_agent(orbax_checkpointer, sac_agent, iql_ckpt_filepath):
     #orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
