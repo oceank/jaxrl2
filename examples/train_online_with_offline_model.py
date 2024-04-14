@@ -148,10 +148,24 @@ def main(_):
         pieces = FLAGS.loaded_online_model_name.split(":")
         online_model_experiment_name = pieces[0]
         online_ckpt_name = pieces[1]
-        loading_online_agent_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, "ckpts", online_ckpt_name)
         online_initial_model_tag = online_ckpt_name[:4] + online_ckpt_name[5:] + "Init"
-        if online_ckpt_name != "best_ckpt":
+        if "best_ckpts" in online_ckpt_name:
+            online_ckpt_step = int(online_ckpt_name[11:])
+            topk="top1"
+            loading_online_agent_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, "ckpts", online_ckpt_name, topk)
+            import csv
+            with open(os.path.join(FLAGS.save_dir, online_model_experiment_name, "ckpts", online_ckpt_name, "top_n_performace.csv"), "r") as f:
+                reader = csv.reader(f, delimiter="\t")
+                for row in reader:
+                    if row[0] == "Name":
+                        continue
+                    if row[0] == topk:
+                        online_ckpt_step = int(row[2])
+                        FLAGS.offline_procedure_step = online_ckpt_step
+                        break
+        else:
             online_ckpt_step = int(online_ckpt_name[5:]) # if online_ckpt_name is not "best_ckpt", it is like "ckpt_1000000
+            loading_online_agent_filepath = os.path.join(FLAGS.save_dir, online_model_experiment_name, "ckpts", online_ckpt_name)
         FLAGS.offline_learning_dataset_folder_name = online_model_experiment_name
         assert FLAGS.online_start_step == (1+FLAGS.offline_procedure_step)
 
@@ -340,7 +354,8 @@ def main(_):
     agent_random_perf = eval_info_agent_random["return"]
     start_training = True # start training the online agent since the online buffer
     agent_online_eval_perfs = [agent_online_perf]
-    window_size = 3 # 3, 5
+    window_size = FLAGS.window_size # 3, 5
+    online_agent_better_perf_steady = False
     for i in tqdm.tqdm(
         range(online_start_step, max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
     ):
@@ -355,18 +370,28 @@ def main(_):
         if FLAGS.experience_collection_mode == "equal":
             online_agent_sel_prob = 0.5
         elif FLAGS.experience_collection_mode == "weighted":
-            online_agent_sel_prob = cal_online_agent_sel_prob(
-                agent_online_perf, agent_offline_perf, agent_random_perf,
-                agent_online_eval_perfs, window_size)
+            if not online_agent_better_perf_steady:
+                online_agent_sel_prob = cal_online_agent_sel_prob(
+                    agent_online_perf, agent_offline_perf, agent_random_perf,
+                    agent_online_eval_perfs, window_size)
+                if online_agent_sel_prob == 1.0:
+                    online_agent_better_perf_steady = True
+            else:
+                online_agent_sel_prob = 1.0
         elif FLAGS.experience_collection_mode == "online":
             online_agent_sel_prob = 1.0
         else:
             raise ValueError(f"Invalid value for FLAGS.experience_collection_mode: {FLAGS.experience_collection_mode}")
 
+        actioning_policy = 1 #"online"
         if agent_sel_probs[i-FLAGS.online_start_step] <= online_agent_sel_prob:
             action = agent_online.sample_actions(observation)
         else:
             action = agent_offline.sample_actions(observation)
+            actioning_policy = -1 #"offline"
+
+        action_info = {"online_agent_sel_prob":online_agent_sel_prob, "actioning_policy":actioning_policy}
+        save_log(summary_writer, action_info, i, "training", use_wandb=FLAGS.wandb)
 
         next_observation, reward, done, info = env.step(action)
 
@@ -393,7 +418,16 @@ def main(_):
             save_log(summary_writer, info["episode"], i, "training", use_wandb=FLAGS.wandb, decoder=decoder)
 
         if start_training:
-            batch_size_offline_buffer = int(FLAGS.batch_size//2) # symmetrical sampling of two buffers
+            if online_agent_better_perf_steady:
+                # uniform sampling from the two buffers
+                # offline_buffer_size_ratio = len(replay_buffer_offline)/(len(replay_buffer_offline) + len(replay_buffer_online))
+                # batch_size_offline_buffer = int(FLAGS.batch_size*offline_buffer_size_ratio)
+
+                # do not use the offline buffer
+                batch_size_offline_buffer = 0
+            else: # symetrical sampling from the two buffers
+                batch_size_offline_buffer = int(FLAGS.batch_size//2) # symmetrical sampling of two buffers
+
             batch_size_online_buffer = FLAGS.batch_size - batch_size_offline_buffer
             batch_offline_buffer = replay_buffer_offline.sample(batch_size_offline_buffer)
             batch_online_buffer = replay_buffer_online.sample(batch_size_online_buffer)
