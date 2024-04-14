@@ -49,7 +49,7 @@ def save_machine_info(filename):
 
 def cal_online_agent_sel_prob(
     agent_online_perf:float, agent_offline_perf:float, agent_random_perf:float,
-    agent_online_eval_perfs, window_size
+    agent_online_eval_perfs, window_size, online_agent_exploration_min_prob:float=0.0
     )->float:
     """_summary_
 
@@ -77,7 +77,7 @@ def cal_online_agent_sel_prob(
         if offline_perf_diff <= 0:
             online_agent_sel_prob = 1.0
         elif online_perf_diff <= 0:
-            online_agent_sel_prob = 0.0
+            online_agent_sel_prob = online_agent_exploration_min_prob
         else:
             online_agent_sel_prob = agent_online_perf/(agent_online_perf+agent_offline_perf)
             if online_agent_sel_prob < 0.1:
@@ -373,7 +373,7 @@ def main(_):
             if not online_agent_better_perf_steady:
                 online_agent_sel_prob = cal_online_agent_sel_prob(
                     agent_online_perf, agent_offline_perf, agent_random_perf,
-                    agent_online_eval_perfs, window_size)
+                    agent_online_eval_perfs, window_size, online_agent_exploration_min_prob=0.2)
                 if online_agent_sel_prob == 1.0:
                     online_agent_better_perf_steady = True
             else:

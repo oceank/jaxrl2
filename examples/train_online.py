@@ -313,6 +313,8 @@ def main(_):
                             rt = best_ckpt_performance[topk]["return"]
                             sp = best_ckpt_performance[topk]["step"]
                             f.write(f"{topk}\t{rt}\t{sp}\n")
+                    ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
+                    save_agent(orbax_checkpointer, agent, i, ckpt_filepath)
 
             # log the best model performance so far
             save_log(summary_writer, {"best_ckpt_return":best_ckpt_performance["top1"]["return"]}, i, "evaluation", use_wandb=FLAGS.wandb)
