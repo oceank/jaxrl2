@@ -47,7 +47,10 @@ def save_machine_info(filename):
         result = jax.device_put(jax.numpy.ones(1), device=jax.devices('gpu')[0])
         f.write(f"==>{result}\n")
 
-def cal_online_agent_sel_prob(agent_online_perf:float, agent_offline_perf:float, agent_random_perf:float)->float:
+def cal_online_agent_sel_prob(
+    agent_online_perf:float, agent_offline_perf:float, agent_random_perf:float,
+    agent_online_eval_perfs, window_size
+    )->float:
     """_summary_
 
     Args:
@@ -58,17 +61,27 @@ def cal_online_agent_sel_prob(agent_online_perf:float, agent_offline_perf:float,
     Returns:
         online_agent_sel_prob (float): a probability of selecting online agent to act
     """
-    online_perf_diff = agent_online_perf - agent_random_perf
-    offline_perf_diff = agent_offline_perf - agent_random_perf
-    online_agent_sel_prob = 1.0
-    if offline_perf_diff <= 0:
+    online_agent_better_perf_steady = False
+    if len(agent_online_eval_perfs) >= window_size:
+        online_agent_better_perf_steady = (agent_online_perf > agent_offline_perf)
+        last_few_evals = agent_online_eval_perfs[-window_size:]
+        last_few_evals_ave = sum(last_few_evals)/window_size
+        online_agent_better_perf_steady = online_agent_better_perf_steady and (last_few_evals_ave>agent_offline_perf)
+        
+    if online_agent_better_perf_steady:
         online_agent_sel_prob = 1.0
-    elif online_perf_diff <= 0:
-        online_agent_sel_prob = 0.0
     else:
-        online_agent_sel_prob = agent_online_perf/(agent_online_perf+agent_offline_perf)
-        if online_agent_sel_prob < 0.1:
-            online_agent_sel_prob = 0.1
+        online_perf_diff = agent_online_perf - agent_random_perf
+        offline_perf_diff = agent_offline_perf - agent_random_perf
+        online_agent_sel_prob = 1.0
+        if offline_perf_diff <= 0:
+            online_agent_sel_prob = 1.0
+        elif online_perf_diff <= 0:
+            online_agent_sel_prob = 0.0
+        else:
+            online_agent_sel_prob = agent_online_perf/(agent_online_perf+agent_offline_perf)
+            if online_agent_sel_prob < 0.1:
+                online_agent_sel_prob = 0.1
     return online_agent_sel_prob
 
 Training_Testing_Seed_Gap = 10000
@@ -93,7 +106,7 @@ flags.DEFINE_integer(
     "initial_collection_steps", int(1e4), "Number of training steps to start training."
 )
 flags.DEFINE_integer("offline_procedure_step", int(800000), "The step when the online learning stops and the offline procedure kicks in.")
-
+flags.DEFINE_integer("window_size", 3, "The window size for calculating the average performance of the online agent in the last few evaluations.")
 flags.DEFINE_boolean("save_online_replay_buffer", False, "Save the online replay buffer.")
 flags.DEFINE_boolean("save_best", True, "Save the best model.")
 flags.DEFINE_boolean("save_ckpt", False, "Save the checkpoints.")
@@ -194,8 +207,8 @@ def main(_):
     agent_online = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs_online)
     if FLAGS.loaded_online_model_name != "":
         load_agent(orbax_checkpointer, agent_online, loading_online_agent_filepath)
-    eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
-    agent_online_perf = eval_info['return']
+    eval_info_agent_online = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
+    agent_online_perf = eval_info_agent_online['return']
 
     ## save the initial performance of the online agent and the offline agent
     eval_filepath = f"{project_dir}/eval_ave_episode_return.txt"
@@ -206,11 +219,11 @@ def main(_):
         f.write(f"Experiment Time\tStep\tReturn\n")
         f.write(f"{expr_time_now_str}\t{step}\t{agent_online_perf}\n")
     eval_file = open(eval_filepath, "a")
-    save_log(summary_writer, eval_info, FLAGS.online_start_step-1, "evaluation", use_wandb=FLAGS.wandb)
+    save_log(summary_writer, eval_info_agent_online, FLAGS.online_start_step-1, "evaluation", use_wandb=FLAGS.wandb)
     ## save the initial best agent
     if FLAGS.save_best:
         best_ckpt_filepath = f"{project_dir}/ckpts/best_ckpt"
-        best_ckpt_performance = {"best_ckpt_return":eval_info["return"], "best_ckpt_step":(FLAGS.online_start_step-1)}
+        best_ckpt_performance = {"best_ckpt_return":agent_online_perf, "best_ckpt_step":(FLAGS.online_start_step-1)}
         save_agent(orbax_checkpointer, agent_online, FLAGS.online_start_step-1, best_ckpt_filepath)
     ## save the checkpoint at step, FLAGS.online_start_step-1: the initial agent
     if FLAGS.save_ckpt:
@@ -279,18 +292,18 @@ def main(_):
                 save_log(summary_writer, update_info, i, "training", use_wandb=FLAGS.wandb)
 
         if (i % FLAGS.eval_interval == 0) or (i == max_steps):
-            eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
-            agent_online_perf = eval_info['return']
+            eval_info_agent_online = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
+            agent_online_perf = eval_info_agent_online['return']
             expr_now = datetime.now()
             expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
             step = i
-            eval_file.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
+            eval_file.write(f"{expr_time_now_str}\t{step}\t{agent_online_perf}\n")
             eval_file.flush()
-            save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
+            save_log(summary_writer, eval_info_agent_online, i, "evaluation", use_wandb=FLAGS.wandb)
 
             ### save the current best agent
-            if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
-                best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
+            if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < agent_online_perf:
+                best_ckpt_performance["best_ckpt_return"] = agent_online_perf
                 best_ckpt_performance["best_ckpt_step"] = i
                 save_agent(orbax_checkpointer, agent_online, i, best_ckpt_filepath)
                 save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
@@ -317,14 +330,17 @@ def main(_):
 
     # Continue online learning
     online_start_step = FLAGS.offline_procedure_step + step_budget_for_offline_dataset_collection + 1
+    save_log(summary_writer, eval_info_agent_online, online_start_step-1, "evaluation", use_wandb=FLAGS.wandb)
     max_steps = FLAGS.max_steps
     pol_sel_key = jax.random.PRNGKey(FLAGS.seed)
     num_gradient_steps = max_steps - online_start_step + 1
     pol_sel_key, subkey = jax.random.split(pol_sel_key)
     agent_sel_probs = jax.random.uniform(subkey, (num_gradient_steps,))
-    eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes, random_agent=True)
-    agent_random_perf = eval_info["return"]
+    eval_info_agent_random = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes, random_agent=True)
+    agent_random_perf = eval_info_agent_random["return"]
     start_training = True # start training the online agent since the online buffer
+    agent_online_eval_perfs = [agent_online_perf]
+    window_size = 3 # 3, 5
     for i in tqdm.tqdm(
         range(online_start_step, max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
     ):
@@ -339,7 +355,9 @@ def main(_):
         if FLAGS.experience_collection_mode == "equal":
             online_agent_sel_prob = 0.5
         elif FLAGS.experience_collection_mode == "weighted":
-            online_agent_sel_prob = cal_online_agent_sel_prob(agent_online_perf, agent_offline_perf, agent_random_perf)
+            online_agent_sel_prob = cal_online_agent_sel_prob(
+                agent_online_perf, agent_offline_perf, agent_random_perf,
+                agent_online_eval_perfs, window_size)
         elif FLAGS.experience_collection_mode == "online":
             online_agent_sel_prob = 1.0
         else:
@@ -387,18 +405,19 @@ def main(_):
                 save_log(summary_writer, update_info, i, "training", use_wandb=FLAGS.wandb)
 
         if (i % FLAGS.eval_interval == 0) or (i == max_steps):
-            eval_info = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
-            agent_online_perf = eval_info['return']
+            eval_info_agent_online = evaluate(agent_online, eval_env, num_episodes=FLAGS.eval_episodes)
+            agent_online_perf = eval_info_agent_online['return']
+            agent_online_eval_perfs.append(agent_online_perf)
             expr_now = datetime.now()
             expr_time_now_str = expr_now.strftime("%Y%m%d-%H%M%S")
             step = i
-            eval_file.write(f"{expr_time_now_str}\t{step}\t{eval_info['return']}\n")
+            eval_file.write(f"{expr_time_now_str}\t{step}\t{agent_online_perf}\n")
             eval_file.flush()
-            save_log(summary_writer, eval_info, i, "evaluation", use_wandb=FLAGS.wandb)
+            save_log(summary_writer, eval_info_agent_online, i, "evaluation", use_wandb=FLAGS.wandb)
 
             ### save the current best agent
-            if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < eval_info["return"]:
-                best_ckpt_performance["best_ckpt_return"] = eval_info["return"]
+            if FLAGS.save_best and best_ckpt_performance["best_ckpt_return"] < agent_online_perf:
+                best_ckpt_performance["best_ckpt_return"] = agent_online_perf
                 best_ckpt_performance["best_ckpt_step"] = i
                 save_agent(orbax_checkpointer, agent_online, i, best_ckpt_filepath)
                 save_log(summary_writer, best_ckpt_performance, i, "evaluation", use_wandb=FLAGS.wandb)
