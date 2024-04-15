@@ -62,11 +62,10 @@ def cal_online_agent_sel_prob(
         online_agent_sel_prob (float): a probability of selecting online agent to act
     """
     online_agent_better_perf_steady = False
+    online_agent_is_better_now = (agent_online_perf > agent_offline_perf)
     if len(agent_online_eval_perfs) >= window_size:
-        online_agent_better_perf_steady = (agent_online_perf > agent_offline_perf)
-        last_few_evals = agent_online_eval_perfs[-window_size:]
-        last_few_evals_ave = sum(last_few_evals)/window_size
-        online_agent_better_perf_steady = online_agent_better_perf_steady and (last_few_evals_ave>agent_offline_perf)
+        recent_evals = agent_online_eval_perfs[-window_size:]
+        online_agent_better_perf_steady = window_size == sum([1 if x > agent_offline_perf else 0 for x in recent_evals])
         
     if online_agent_better_perf_steady:
         online_agent_sel_prob = 1.0
@@ -82,7 +81,7 @@ def cal_online_agent_sel_prob(
             online_agent_sel_prob = agent_online_perf/(agent_online_perf+agent_offline_perf)
             if online_agent_sel_prob < 0.1:
                 online_agent_sel_prob = 0.1
-    return online_agent_sel_prob
+    return online_agent_sel_prob, online_agent_is_better_now, online_agent_better_perf_steady
 
 Training_Testing_Seed_Gap = 10000
 FLAGS = flags.FLAGS
@@ -371,11 +370,9 @@ def main(_):
             online_agent_sel_prob = 0.5
         elif FLAGS.experience_collection_mode == "weighted":
             if not online_agent_better_perf_steady:
-                online_agent_sel_prob = cal_online_agent_sel_prob(
+                online_agent_sel_prob, online_agent_is_better_now, online_agent_better_perf_steady = cal_online_agent_sel_prob(
                     agent_online_perf, agent_offline_perf, agent_random_perf,
                     agent_online_eval_perfs, window_size, online_agent_exploration_min_prob=0.2)
-                if online_agent_sel_prob == 1.0:
-                    online_agent_better_perf_steady = True
             else:
                 online_agent_sel_prob = 1.0
         elif FLAGS.experience_collection_mode == "online":
@@ -419,12 +416,14 @@ def main(_):
 
         if start_training:
             if online_agent_better_perf_steady:
-                # uniform sampling from the two buffers
-                # offline_buffer_size_ratio = len(replay_buffer_offline)/(len(replay_buffer_offline) + len(replay_buffer_online))
-                # batch_size_offline_buffer = int(FLAGS.batch_size*offline_buffer_size_ratio)
-
                 # do not use the offline buffer
                 batch_size_offline_buffer = 0
+            elif online_agent_is_better_now:
+                # when online agent is better than offline agent,
+                # but its superium is not steady yet
+                # then, uniform sampling from the two buffers
+                offline_buffer_size_ratio = len(replay_buffer_offline)/(len(replay_buffer_offline) + len(replay_buffer_online))
+                batch_size_offline_buffer = int(FLAGS.batch_size*offline_buffer_size_ratio)
             else: # symetrical sampling from the two buffers
                 batch_size_offline_buffer = int(FLAGS.batch_size//2) # symmetrical sampling of two buffers
 
