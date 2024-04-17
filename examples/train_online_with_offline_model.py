@@ -61,30 +61,26 @@ def cal_online_agent_sel_prob(
     Returns:
         online_agent_sel_prob (float): a probability of selecting online agent to act
     """
-
-    ratio_threshold = 1.5 # the online policy's performance is about 0.5 times better than the offline policy's performance
-    online_perf_diff = agent_online_perf - agent_random_perf
-    offline_perf_diff = agent_offline_perf - agent_random_perf
-    online_agent_sel_prob = 1.0
-    online_agent_is_better_now = False
-    if offline_perf_diff <= 0:
-        online_agent_sel_prob = 1.0
-    elif online_perf_diff <= 0:
-        online_agent_sel_prob = online_agent_exploration_min_prob
-    else:
-        online_agent_better_perf_steady = False
-        online_agent_is_better_now = (agent_online_perf > agent_offline_perf)
-        if len(agent_online_eval_perfs) >= window_size:
-            recent_evals = agent_online_eval_perfs[-window_size:]
-            online_agent_better_perf_steady = window_size == sum([1 if (x-agent_random_perf) > (ratio_threshold*offline_perf_diff) else 0 for x in recent_evals])
+    online_agent_better_perf_steady = False
+    online_agent_is_better_now = (agent_online_perf > agent_offline_perf)
+    if len(agent_online_eval_perfs) >= window_size:
+        recent_evals = agent_online_eval_perfs[-window_size:]
+        online_agent_better_perf_steady = window_size == sum([1 if x > agent_offline_perf else 0 for x in recent_evals])
         
-        on_over_off_ratio = online_perf_diff/offline_perf_diff
-        if online_agent_is_better_now:
-            online_agent_sel_prob = on_over_off_ratio*(on_over_off_ratio/(on_over_off_ratio+1)) # (x*x)/(x+1): [1, 1.5] -> [0.5, 0.9]
-        else:
-            online_agent_sel_prob = on_over_off_ratio/(on_over_off_ratio+1) # x/(x+1): [0, 1] -> [0, 0.5]
-        if online_agent_sel_prob < online_agent_exploration_min_prob:
+    if online_agent_better_perf_steady:
+        online_agent_sel_prob = 1.0
+    else:
+        online_perf_diff = agent_online_perf - agent_random_perf
+        offline_perf_diff = agent_offline_perf - agent_random_perf
+        online_agent_sel_prob = 1.0
+        if offline_perf_diff <= 0:
+            online_agent_sel_prob = 1.0
+        elif online_perf_diff <= 0:
             online_agent_sel_prob = online_agent_exploration_min_prob
+        else:
+            online_agent_sel_prob = agent_online_perf/(agent_online_perf+agent_offline_perf)
+            if online_agent_sel_prob < 0.1:
+                online_agent_sel_prob = 0.1
     return online_agent_sel_prob, online_agent_is_better_now, online_agent_better_perf_steady
 
 Training_Testing_Seed_Gap = 10000
