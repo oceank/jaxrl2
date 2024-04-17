@@ -63,47 +63,29 @@ def cal_online_agent_sel_prob(
     """
 
     ratio_threshold = 1.5 # the online policy's performance is about 0.5 times better than the offline policy's performance
-    online_agent_exploration_max_prob_before_steady_better = (ratio_threshold*ratio_threshold)/(ratio_threshold+1) # ratio_threshold in [1, 1.5] -> [0.5, 0.9]
     online_perf_diff = agent_online_perf - agent_random_perf
     offline_perf_diff = agent_offline_perf - agent_random_perf
     online_agent_sel_prob = 1.0
     online_agent_is_better_now = False
-    #online_agent_better_perf_steady = False
-
-    # 0: quick learning from offline policy - symmetic sampling, x/(x+1) for x in [0, 1]
-    # 1: keep learning steady using offline policy, - uniform sampling, x^2/(x+1) for x in [1, ratio_threshold]
-    # 2: continual learning with full online mode - uniform sampling with only the online buffer, 1.0
-    online_learning_batch_sampling_mode = "symmetric"
     if offline_perf_diff <= 0:
-        online_learning_batch_sampling_mode = "only_online"
         online_agent_sel_prob = 1.0
     elif online_perf_diff <= 0:
         online_agent_sel_prob = online_agent_exploration_min_prob
     else:
-        online_agent_is_better_now = (online_perf_diff > ratio_threshold*offline_perf_diff)
+        online_agent_better_perf_steady = False
+        online_agent_is_better_now = (agent_online_perf > agent_offline_perf)
         if len(agent_online_eval_perfs) >= window_size:
             recent_evals = agent_online_eval_perfs[-window_size:]
-            #online_agent_better_perf_steady = window_size == sum([1 if (x-agent_random_perf) > (ratio_threshold*offline_perf_diff) else 0 for x in recent_evals])
-            if window_size == sum([1 if (x-agent_random_perf) > (ratio_threshold*offline_perf_diff) else 0 for x in recent_evals]):
-                online_learning_batch_sampling_mode = "only_online"
-            elif (window_size//2) == sum([1 if (x-agent_random_perf) > (ratio_threshold*offline_perf_diff) else 0 for x in recent_evals]):
-                online_learning_batch_sampling_mode = "uniform_all"
-            
+            online_agent_better_perf_steady = window_size == sum([1 if (x-agent_random_perf) > (ratio_threshold*offline_perf_diff) else 0 for x in recent_evals])
         
-        if online_learning_batch_sampling_mode == "only_online":
-            online_agent_sel_prob = 1.0
+        on_over_off_ratio = online_perf_diff/offline_perf_diff
+        if online_agent_is_better_now:
+            online_agent_sel_prob = on_over_off_ratio*(on_over_off_ratio/(on_over_off_ratio+1)) # (x*x)/(x+1): [1, 1.5] -> [0.5, 0.9]
         else:
-            on_over_off_ratio = online_perf_diff/offline_perf_diff
-            if online_agent_is_better_now:
-                online_agent_sel_prob = on_over_off_ratio*(on_over_off_ratio/(on_over_off_ratio+1)) # (x*x)/(x+1): [1, 1.5] -> [0.5, 0.9]
-            else:
-                online_agent_sel_prob = on_over_off_ratio/(on_over_off_ratio+1) # x/(x+1): [0, 1] -> [0, 0.5]
-            if online_agent_sel_prob < online_agent_exploration_min_prob:
-                online_agent_sel_prob = online_agent_exploration_min_prob
-            if online_agent_sel_prob > online_agent_exploration_max_prob_before_steady_better:
-                online_agent_sel_prob = online_agent_exploration_max_prob_before_steady_better
-
-    return online_agent_sel_prob, online_learning_batch_sampling_mode
+            online_agent_sel_prob = on_over_off_ratio/(on_over_off_ratio+1) # x/(x+1): [0, 1] -> [0, 0.5]
+        if online_agent_sel_prob < online_agent_exploration_min_prob:
+            online_agent_sel_prob = online_agent_exploration_min_prob
+    return online_agent_sel_prob, online_agent_is_better_now, online_agent_better_perf_steady
 
 Training_Testing_Seed_Gap = 10000
 FLAGS = flags.FLAGS
@@ -392,11 +374,9 @@ def main(_):
             online_agent_sel_prob = 0.5
         elif FLAGS.experience_collection_mode == "weighted":
             if not online_agent_better_perf_steady:
-                online_agent_sel_prob, online_learning_batch_sampling_mode = cal_online_agent_sel_prob(
+                online_agent_sel_prob, online_agent_is_better_now, online_agent_better_perf_steady = cal_online_agent_sel_prob(
                     agent_online_perf, agent_offline_perf, agent_random_perf,
                     agent_online_eval_perfs, window_size, online_agent_exploration_min_prob=0.2)
-                if online_learning_batch_sampling_mode == "only_online":
-                    online_agent_better_perf_steady = True
             else:
                 online_agent_sel_prob = 1.0
         elif FLAGS.experience_collection_mode == "online":
@@ -439,18 +419,17 @@ def main(_):
             save_log(summary_writer, info["episode"], i, "training", use_wandb=FLAGS.wandb, decoder=decoder)
 
         if start_training:
-
-            if online_learning_batch_sampling_mode == "symmetric":  # symetrical sampling from the two buffers
-                batch_size_offline_buffer = int(FLAGS.batch_size//2) # symmetrical sampling of two buffers
-            else: # "uniform_all" and "online_only"
-                # when online agent is better than offline agent 
+            if online_agent_better_perf_steady:
+                # do not use the offline buffer
+                batch_size_offline_buffer = 0
+            elif online_agent_is_better_now:
+                # when online agent is better than offline agent,
+                # but its superium is not steady yet
                 # then, uniform sampling from the two buffers
-                if online_agent_sel_prob == 1.0:
-                    offline_buffer_size_ratio = len(replay_buffer_offline)/(len(replay_buffer_offline) + len(replay_buffer_online))
-                else:
-                    offline_buffer_size_ratio = 0.5 * (1-online_agent_sel_prob)
+                offline_buffer_size_ratio = len(replay_buffer_offline)/(len(replay_buffer_offline) + len(replay_buffer_online))
                 batch_size_offline_buffer = int(FLAGS.batch_size*offline_buffer_size_ratio)
-                
+            else: # symetrical sampling from the two buffers
+                batch_size_offline_buffer = int(FLAGS.batch_size//2) # symmetrical sampling of two buffers
 
             batch_size_online_buffer = FLAGS.batch_size - batch_size_offline_buffer
             batch_offline_buffer = replay_buffer_offline.sample(batch_size_offline_buffer)
