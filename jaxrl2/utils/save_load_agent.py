@@ -5,7 +5,7 @@ from gym.utils import seeding
 from flax.training import orbax_utils
 import orbax.checkpoint
 
-from jaxrl2.agents import SACLearner, DrQLearner, BCLearner, IQLLearner
+from jaxrl2.agents import SACLearner, DrQLearner, BCLearner, IQLLearner, SACBasedPEXLearner
 
 # kwargs: random generators of environments and replay buffer sampling.
 #           This is for resuming online training.
@@ -14,6 +14,8 @@ def save_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True):
         save_SAC_agent(orbax_checkpointer, agent, i, ckpt_filepath, force)
     elif isinstance(agent, IQLLearner):
         save_IQL_agent(orbax_checkpointer, agent, i, ckpt_filepath, force)
+    elif isinstance(agent, SACBasedPEXLearner):
+        save_SACBasedPEX_agent(orbax_checkpointer, agent, i, ckpt_filepath, force)
     else:
         raise ValueError("The agent to save must be an instance of SACLearner or IQLearner")
 
@@ -25,6 +27,45 @@ def load_agent(orbax_checkpointer, agent, ckpt_filepath):
     else:
         raise ValueError("The agent to load must be an instance of SACLearner or IQLearner")
     
+
+def save_SACBasedPEX_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True):
+    ckpt = {
+        "step": i,
+        "sac_agent": agent.sac_agent,
+        "iql_agent": agent.iql_agent,
+        "inv_temperature": agent.inv_temperature,
+        "transfer_critic": agent.transfer_critic,
+        "copy_to_target" : agent.copy_to_target,
+        "rng": agent._rng,
+        "sac_eps_sample_key": agent._sac_eps_sample_key,
+        "pex_eps_sample_key": agent._pex_eps_sample_key,
+    }
+
+    save_args = orbax_utils.save_args_from_target(ckpt)
+    orbax_checkpointer.save(ckpt_filepath, ckpt, save_args=save_args, force=force)
+
+def load_IQL_agent(orbax_checkpointer, agent, ckpt_filepath):
+    target = {
+        "step": 0,
+        "sac_agent": agent.sac_agent,
+        "iql_agent": agent.iql_agent,
+        "inv_temperature": agent.inv_temperature,
+        "transfer_critic": agent.transfer_critic,
+        "copy_to_target" : agent.copy_to_target,
+        "rng": agent._rng,
+        "sac_eps_sample_key": agent._sac_eps_sample_key,
+        "pex_eps_sample_key": agent._pex_eps_sample_key,
+    }
+
+    ckpt_restored = orbax_checkpointer.restore(ckpt_filepath, item=target)
+    agent.sac_agent = ckpt_restored["sac_agent"]
+    agent.iql_agent = ckpt_restored["iql_agent"]
+    agent.inv_temperature = ckpt_restored["inv_temperature"]
+    agent.transfer_critic = ckpt_restored["transfer_critic"]
+    agent.copy_to_target = ckpt_restored["copy_to_target"]
+    agent._rng = ckpt_restored["rng"]
+    agent._sac_eps_sample_key = ckpt_restored["sac_eps_sample_key"]
+    agent._pex_eps_sample_key = ckpt_restored["pex_eps_sample_key"]
 
 def save_IQL_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True):
     ckpt = {
