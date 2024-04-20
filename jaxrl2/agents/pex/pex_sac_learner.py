@@ -2,7 +2,7 @@
 
 import copy
 import functools
-from typing import Callable, Dict
+from typing import Callable, Dict, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -10,12 +10,86 @@ import numpy as np
 import distrax
 from flax.core.frozen_dict import FrozenDict
 
+from jaxrl2.agents.common import eval_actions_jit, sample_actions_jit
 from jaxrl2.agents.agent import Agent
 from jaxrl2.agents.sac import SACLearner
 from jaxrl2.agents.iql import IQLLearner
 
 from jaxrl2.data.dataset import DatasetDict
 from jaxrl2.types import Params, PRNGKey
+
+@functools.partial(jax.jit, static_argnames="inv_temperature")
+def _select_policy_to_act_jit(
+    rng: PRNGKey,
+    q1: jnp.ndarray,
+    q2: jnp.ndarray,
+    a1: jnp.ndarray,
+    a2: jnp.ndarray,
+    inv_temperature: float
+) -> Tuple[PRNGKey, jnp.ndarray]:
+    q = jnp.stack([q1, q2], axis=-1)
+    logits = q * inv_temperature
+    w_dist = distrax.Categorical(logits=logits)
+    rng, key = jax.random.split(rng)
+    w = w_dist.sample(seed=key)
+
+    w = jnp.expand_dims(w, axis=-1)
+    actions = (1 - w) * a1 + w * a2
+
+    return rng, actions 
+
+@functools.partial(jax.jit, static_argnames="sample_epsilon")
+def _greedy_eps_sample_action(
+    rng: PRNGKey,
+    sampled_actions: jnp.ndarray,
+    greedy_actions: jnp.ndarray,
+    sample_epsilon: float,
+) -> Tuple[PRNGKey, jnp.ndarray]:
+    rng, key = jax.random.split(rng)
+    #greedy_mask = jax.random.uniform(key, shape=(greedy_actions.shape[0],)) > sample_epsilon
+    #sampled_actions = sampled_actions.at[greedy_mask].set(greedy_actions[greedy_mask])
+    #print(f"greedy_actions: {greedy_actions.shape}")
+    greedy_mask = jax.random.uniform(key, shape=(greedy_actions.shape[0],)) > sample_epsilon
+    #greedy_mask = jnp.expand_dims(greedy_mask, axis=0)
+    #greedy_mask = jnp.repeat(greedy_mask, greedy_actions.shape[1], axis=1)
+    sampled_actions = jnp.where(
+        greedy_mask[:, None],
+        greedy_actions,
+        sampled_actions,
+    )
+ 
+    return rng, sampled_actions
+
+@functools.partial(jax.jit, static_argnames=("inv_temperature", "sample_epsilon"))
+def _select_policy_with_greedy_eps_to_act_jit(
+    rng_policy_sampling: PRNGKey,
+    rng_greedy_eps: PRNGKey,
+    q1: jnp.ndarray,
+    q2: jnp.ndarray,
+    a1: jnp.ndarray,
+    a2: jnp.ndarray,
+    inv_temperature: float,
+    sample_epsilon: float,
+) -> Tuple[PRNGKey, PRNGKey, jnp.ndarray]:
+    q = jnp.stack([q1, q2], axis=-1)
+    logits = q * inv_temperature
+    w_dist = distrax.Categorical(logits=logits)
+
+    # sampled policy
+    rng_policy_sampling, key = jax.random.split(rng_policy_sampling)
+    sampled_policy = w_dist.sample(seed=key)
+    # greedy policy
+    greedy_policy = w_dist.mode()
+    # determine the final selected policy
+    rng_greedy_eps, policy_selection = _greedy_eps_sample_action(
+        rng_greedy_eps, sampled_policy[:, None], greedy_policy[:, None], sample_epsilon)
+    policy_selection = jnp.squeeze(policy_selection, 0)
+
+    policy_selection = jnp.expand_dims(policy_selection, axis=-1)
+    actions = (1 - policy_selection) * a1 + policy_selection * a2
+
+    return rng_policy_sampling, rng_greedy_eps, actions 
+
 
 @functools.partial(jax.jit, static_argnames=("critic_apply_fn", "critic_reduction"))
 def _calculate_q_jit(
@@ -45,6 +119,7 @@ class SACBasedPEXLearner(Agent):
         inv_temperature: float,
         transfer_critic: bool = False,
         copy_to_target: bool = False,
+        sample_epsilon = 0.1,
     ):
         """
         An implementation of the version of PEX using SAC as the online backbone described in https://arxiv.org/pdf/2302.00935.pdf
@@ -52,14 +127,15 @@ class SACBasedPEXLearner(Agent):
         """
         
         rng = jax.random.PRNGKey(seed)
-        rng, sac_eps_sample_key, pex_eps_sample_key = jax.random.split(rng, 3)
+        rng, sac_eps_sample_rng, pex_eps_sample_rng = jax.random.split(rng, 3)
 
         self.sac_agent = sac_agent
         self.iql_agent = iql_agent
         self.inv_temperature = inv_temperature
         self.transfer_critic = transfer_critic
         self.copy_to_target = copy_to_target
-        
+        self.sample_epsilon = sample_epsilon
+
         if self.transfer_critic:
             # transfer the offline-learned critic to the SAC agent for online finetunning
             self.sac_agent._critic.replace(params=self.iql_agent._critic.params)
@@ -69,82 +145,109 @@ class SACBasedPEXLearner(Agent):
                 self.sac_agent._target_critic_params = copy.deepcopy(self.iql_agent._target_critic_params)
 
         self._rng = rng
-        self._sac_eps_sample_key = sac_eps_sample_key
-        self._pex_eps_sample_key = pex_eps_sample_key
+        self._sac_eps_sample_rng = sac_eps_sample_rng
+        self._pex_eps_sample_rng = pex_eps_sample_rng
+
+    def get_actions_of_policy_set(self, observations: np.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        iql_actions = eval_actions_jit(
+            self.iql_agent._actor.apply_fn,
+            self.iql_agent._actor.params,
+            observations
+        )
+        sac_rng, sac_actions = sample_actions_jit(
+            self.sac_agent._rng,
+            self.sac_agent._actor.apply_fn,
+            self.sac_agent._actor.params,
+            observations
+        )
+        self.sac_agent_rng = sac_rng
+        return iql_actions, sac_actions
+
+    def get_greedy_action_of_sac_agent(self, observations: np.ndarray) -> jnp.ndarray:
+        actions = eval_actions_jit(
+            self.sac_agent._actor.apply_fn,
+            self.sac_agent._actor.params,
+            observations
+        )
+        return actions
 
     def eval_actions(self, observations: np.ndarray) -> np.ndarray:
-        sample_epsilon = 0.1
         observations = np.expand_dims(observations, axis=0)
-        a1 = jnp.array(self.iql_agent.eval_actions(observations))
+ 
+        iql_actions, sac_sampled_actions = self.get_actions_of_policy_set(observations)
+        sac_greedy_actions = self.get_greedy_action_of_sac_agent(observations)
 
-        a2 = jnp.array(self.sac_agent.sample_actions(observations))
-        greedy_a2 = jnp.array(self.sac_agent.eval_actions(observations))
-        self._sac_eps_sample_key, sample_key = jax.random.split(self._sac_eps_sample_key)
-        sac_greedy_mask = jax.random.uniform(sample_key, shape=(a2.shape[0],)) > sample_epsilon
-        a2 = a2.at[sac_greedy_mask].set(greedy_a2[sac_greedy_mask])
-        
-        q1 = _calculate_q_jit(
+        sac_eps_sample_rng, sac_actions = _greedy_eps_sample_action(
+            self._sac_eps_sample_rng,
+            sac_sampled_actions,
+            sac_greedy_actions,
+            self.sample_epsilon
+        )
+        self._sac_eps_sample_rng = sac_eps_sample_rng
+       
+        iql_q = _calculate_q_jit(
             self.iql_agent._critic.apply_fn,
             self.iql_agent._critic.params,
             observations,
-            a1,
+            iql_actions,
             self.iql_agent.critic_reduction
         )
-        q2 = _calculate_q_jit(
+        sac_q = _calculate_q_jit(
             self.sac_agent._critic.apply_fn,
             self.sac_agent._critic.params,
             observations,
-            a2,
+            sac_actions,
             self.sac_agent.critic_reduction
         )
 
-        q = jnp.stack([q1, q2], axis=-1)
-        logits = q * self.inv_temperature
-        w_dist = distrax.Categorical(logits=logits)
-        
-        greedy_policy_selection = w_dist.mode()
-        self._pex_eps_sample_key, sample_key = jax.random.split(self._pex_eps_sample_key)
-        ps_greedy_mask = jax.random.uniform(sample_key, shape=(greedy_policy_selection.shape[0],)) > sample_epsilon
-        
-        self._rng, key = jax.random.split(self._rng)
-        w = w_dist.sample(seed=key)
-        w = w.at[ps_greedy_mask].set(greedy_policy_selection[ps_greedy_mask])
+        rng, pex_eps_sample_rng, actions = _select_policy_with_greedy_eps_to_act_jit(
+            self._rng,
+            self._pex_eps_sample_rng,
+            iql_q,
+            sac_q,
+            iql_actions,
+            sac_actions,
+            self.inv_temperature,
+            self.sample_epsilon
+        )
 
-        w = jnp.expand_dims(w, axis=-1)
-        actions = (1 - w) * a1 + w * a2
+        self._rng = rng
+        self._pex_eps_sample_rng = pex_eps_sample_rng
+        actions = jnp.squeeze(actions, 0)
 
-        return np.asarray(jnp.squeeze(actions, 0))
+        return np.asarray(actions)
 
     def sample_actions(self, observations: np.ndarray) -> np.ndarray:
         observations = np.expand_dims(observations, axis=0)
-        a1 = jnp.array(self.iql_agent.eval_actions(observations))
-        a2 = jnp.array(self.sac_agent.sample_actions(observations))
 
-        q1 = _calculate_q_jit(
+        iql_actions, sac_actions = self.get_actions_of_policy_set(observations)
+ 
+        iql_q = _calculate_q_jit(
             self.iql_agent._critic.apply_fn,
             self.iql_agent._critic.params,
             observations,
-            a1,
+            iql_actions,
             self.iql_agent.critic_reduction
         )
-        q2 = _calculate_q_jit(
+        sac_q = _calculate_q_jit(
             self.sac_agent._critic.apply_fn,
             self.sac_agent._critic.params,
             observations,
-            a2,
+            sac_actions,
             self.sac_agent.critic_reduction
         )
 
-        q = jnp.stack([q1, q2], axis=-1)
-        logits = q * self.inv_temperature
-        w_dist = distrax.Categorical(logits=logits)
-        self._rng, key = jax.random.split(self._rng)
-        w = w_dist.sample(seed=key)
+        rng, actions = _select_policy_to_act_jit(
+            self._rng,
+            iql_q, sac_q,
+            iql_actions, sac_actions,
+            self.inv_temperature
+        )
 
-        w = jnp.expand_dims(w, axis=-1)
-        actions = (1 - w) * a1 + w * a2
+        self._rng = rng
+        actions = jnp.squeeze(actions, 0)
 
-        return np.asarray(jnp.squeeze(actions, 0))
+        return np.asarray(actions)
 
     def update(self, batch: FrozenDict) -> Dict[str, float]:
         info = self.sac_agent.update(batch)

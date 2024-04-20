@@ -34,11 +34,12 @@ def save_SACBasedPEX_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=Tr
         "sac_agent": agent.sac_agent,
         "iql_agent": agent.iql_agent,
         "inv_temperature": agent.inv_temperature,
+        "sample_epsilon" : agent.sample_epsilon,
         "transfer_critic": agent.transfer_critic,
         "copy_to_target" : agent.copy_to_target,
         "rng": agent._rng,
-        "sac_eps_sample_key": agent._sac_eps_sample_key,
-        "pex_eps_sample_key": agent._pex_eps_sample_key,
+        "sac_eps_sample_rng": agent._sac_eps_sample_rng,
+        "pex_eps_sample_rng": agent._pex_eps_sample_rng,
     }
 
     save_args = orbax_utils.save_args_from_target(ckpt)
@@ -50,22 +51,24 @@ def load_IQL_agent(orbax_checkpointer, agent, ckpt_filepath):
         "sac_agent": agent.sac_agent,
         "iql_agent": agent.iql_agent,
         "inv_temperature": agent.inv_temperature,
+        "sample_epsilon" : agent.sample_epsilon,
         "transfer_critic": agent.transfer_critic,
         "copy_to_target" : agent.copy_to_target,
         "rng": agent._rng,
-        "sac_eps_sample_key": agent._sac_eps_sample_key,
-        "pex_eps_sample_key": agent._pex_eps_sample_key,
+        "sac_eps_sample_rng": agent._sac_eps_sample_rng,
+        "pex_eps_sample_rng": agent._pex_eps_sample_rng,
     }
 
     ckpt_restored = orbax_checkpointer.restore(ckpt_filepath, item=target)
     agent.sac_agent = ckpt_restored["sac_agent"]
     agent.iql_agent = ckpt_restored["iql_agent"]
     agent.inv_temperature = ckpt_restored["inv_temperature"]
+    agent.sample_epsilon  = ckpt_restored["sample_epsilon"]
     agent.transfer_critic = ckpt_restored["transfer_critic"]
     agent.copy_to_target = ckpt_restored["copy_to_target"]
     agent._rng = ckpt_restored["rng"]
-    agent._sac_eps_sample_key = ckpt_restored["sac_eps_sample_key"]
-    agent._pex_eps_sample_key = ckpt_restored["pex_eps_sample_key"]
+    agent._sac_eps_sample_rng = ckpt_restored["sac_eps_sample_rng"]
+    agent._pex_eps_sample_rng = ckpt_restored["pex_eps_sample_rng"]
 
 def save_IQL_agent(orbax_checkpointer, agent, i, ckpt_filepath, force=True):
     ckpt = {
