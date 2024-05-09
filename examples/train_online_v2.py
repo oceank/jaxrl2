@@ -284,7 +284,7 @@ def main(_):
 
                 # if the current step, e.g. 80000, is one of predefined step to save top n policies,
                 # save the current top n models into best_ckpts_80000 folder under the ckpts folder
-                if i in top_n_checkpoints:
+                if (i in top_n_checkpoints) and (i != FLAGS.max_steps):
                     best_ckpt_dir_i = f"{project_dir}/ckpts/best_ckpts_{i}"
                     for k in range(1, FLAGS.save_best_n+1, 1):
                         topk = f"top{k}"
