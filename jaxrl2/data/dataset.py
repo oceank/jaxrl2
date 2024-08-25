@@ -174,6 +174,13 @@ class Dataset(object):
 
         self.dataset_len = _check_lengths(self.dataset_dict)
 
+    def filter2(
+        self, transition_indices_to_select
+    ):
+        self.dataset_dict = _subselect(self.dataset_dict, transition_indices_to_select)
+
+        self.dataset_len = _check_lengths(self.dataset_dict)
+
     def normalize_returns(self, scaling: float = 1000):
         (_, _, episode_returns) = self._trajectory_boundaries_and_returns()
         self.dataset_dict["rewards"] /= np.max(episode_returns) - np.min(

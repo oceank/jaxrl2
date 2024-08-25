@@ -7,3 +7,4 @@ from jaxrl2.wrappers.repeat_action import RepeatAction
 from jaxrl2.wrappers.single_precision import SinglePrecision
 from jaxrl2.wrappers.universal_seed import UniversalSeed
 from jaxrl2.wrappers.video_recorder import VideoRecorder
+from jaxrl2.wrappers.sparse_reward import SparseRewardWrapper

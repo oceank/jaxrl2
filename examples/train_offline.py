@@ -93,7 +93,7 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_string("env_name", "halfcheetah-expert-v2", "Environment name.")
 flags.DEFINE_string("save_dir", "./tmp/", "Tensorboard logging dir.")
-flags.DEFINE_string("dataset_name", "d4rl", "the source name of offline dataset.")
+flags.DEFINE_string("dataset_name", None, "the source name of offline dataset.")
 flags.DEFINE_string("dataset_dir", None, "the path of the directory that contains the dataset (not from d4rl).")
 flags.DEFINE_string("dataset_reweighting", None, "the reweighting method and parameter for the dataset.") # "AW_alpha" (alpha=0), "RW_alpha"  (alpha=0.1)
 flags.DEFINE_integer("seed", 42, "Random seed.")
@@ -102,6 +102,7 @@ flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
 flags.DEFINE_integer("eval_interval", 5000, "Eval interval.")
 flags.DEFINE_integer("batch_size", 256, "Mini batch size.")
 flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
+flags.DEFINE_integer("size_of_dataset_from_online_buffer", int(1e6), "The size of dataset copied from the online replay buffer. The copied dataset starts from the initial experience in the online replay buffer.")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
 flags.DEFINE_boolean("wandb", True, "Log wandb.")
 flags.DEFINE_boolean("save_best", True, "Save the best model.")
@@ -124,10 +125,13 @@ def main(_):
     now = datetime.now()
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
     offline_algo="iql"
-    dataset_names = FLAGS.dataset_name.split(",")
-    dataset_tag = "_".join([get_dataset_tag(dn, FLAGS.env_name) for dn in dataset_names])
+    if FLAGS.dataset_name is None:
+        dataset_tag = ""
+    else:
+        dataset_names = FLAGS.dataset_name.split(",")
+        dataset_tag = "_".join([get_dataset_tag(dn, FLAGS.env_name) for dn in dataset_names])
     if (FLAGS.dataset_name!="d4rl") and FLAGS.use_behavior_policy_buffer:
-        dataset_tag += "B"
+        dataset_tag += f"B{int(FLAGS.size_of_dataset_from_online_buffer/1000)}k"
     if FLAGS.dataset_reweighting is not None:
         dataset_tag += "".join(FLAGS.dataset_reweighting.split("_"))
     project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_off_{offline_algo}_{dataset_tag}_{expr_time_str}"
@@ -163,22 +167,32 @@ def main(_):
         dataset = D4RLDataset(env)
     else:
         assert FLAGS.dataset_dir, "Please specify the dataset directory."
-        dataset = None
-        for dn in dataset_names:
-            dataset_path = os.path.join(FLAGS.dataset_dir, f"{dn}.h5py")
-            dataset_loaded, metadata_loaded = ReplayBuffer.load_dataset_h5py(dataset_path)
-            if dataset is not None:
-                for key, value in dataset_loaded.items():
-                    dataset[key] = np.concatenate((dataset[key], value), axis=0)
-            else:
-                dataset = dataset_loaded
-        if FLAGS.use_behavior_policy_buffer:
+        if FLAGS.dataset_name is None:
+            assert FLAGS.use_behavior_policy_buffer, "Please enable the option, use_behavior_policy_buffer, since the option dataset_name is set to None."
+            dataset = {}
             full_replay_buffer_path = os.path.join(FLAGS.dataset_dir, "final_replay_buffer.h5py")
             full_replay_buffer, metadata_buffer = ReplayBuffer.load_dataset_h5py(full_replay_buffer_path)
-            largest_ckpt_step = max([int(dn.split('_')[-1]) for dn in dataset_names])
+            largest_ckpt_step = FLAGS.size_of_dataset_from_online_buffer
             for key, value in full_replay_buffer.items():
-                dataset[key] = np.concatenate((dataset[key], value[:largest_ckpt_step]), axis=0)
-        dataset = Dataset(dataset_dict=dataset)
+                dataset[key] = value[:largest_ckpt_step]
+            dataset = Dataset(dataset_dict=dataset)
+        else:
+            dataset = None
+            for dn in dataset_names:
+                dataset_path = os.path.join(FLAGS.dataset_dir, f"{dn}.h5py")
+                dataset_loaded, metadata_loaded = ReplayBuffer.load_dataset_h5py(dataset_path)
+                if dataset is not None:
+                    for key, value in dataset_loaded.items():
+                        dataset[key] = np.concatenate((dataset[key], value), axis=0)
+                else:
+                    dataset = dataset_loaded
+            if FLAGS.use_behavior_policy_buffer:
+                full_replay_buffer_path = os.path.join(FLAGS.dataset_dir, "final_replay_buffer.h5py")
+                full_replay_buffer, metadata_buffer = ReplayBuffer.load_dataset_h5py(full_replay_buffer_path)
+                largest_ckpt_step = max([int(dn.split('_')[-1]) for dn in dataset_names])
+                for key, value in full_replay_buffer.items():
+                    dataset[key] = np.concatenate((dataset[key], value[:largest_ckpt_step]), axis=0)
+            dataset = Dataset(dataset_dict=dataset)
 
     plot_episode_returns(
         dataset,

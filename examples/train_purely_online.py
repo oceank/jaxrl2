@@ -26,19 +26,6 @@ from jaxrl2.utils.save_expr_log import save_log
 from tensorboardX import SummaryWriter
 from datetime import datetime
 
-top_n_checkpoints_all_envs = {
-    "Walker2d": [80000, 800000],
-    "Hopper": [80000, 800000],
-    "HalfCheetah": [80000, 800000],
-    "Ant": [80000, 800000],
-    "hammer": [80000, 800000],
-    "pen": [80000, 800000],
-    "relocate": [80000, 800000],
-    "door": [80000, 800000],
-    "maze2d": [80000, 800000],
-    "kitchen": [80000, 800000],
-}
-
 def save_machine_info(filename):
     """
     Saves the output of hostname and nvidia-smi to a file.
@@ -66,8 +53,6 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_string("env_name", "HalfCheetah-v2", "Environment name.")
 flags.DEFINE_string("save_dir", "./tmp/", "Tensorboard logging dir.")
-flags.DEFINE_string("loaded_online_model_name", "",
-                    "The name of the loaded online model, including the experiment name and ckpt that are separated by a colon")
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("eval_episodes", 10, "Number of episodes used for evaluation.")
 flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
@@ -78,11 +63,12 @@ flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
 flags.DEFINE_integer(
     "start_training", int(1e4), "Number of training steps to start training."
 )
+flags.DEFINE_integer("reward_accumulate_steps", 1, "Number of steps to accumulate the reward for sparsing the orignal reward.")
 flags.DEFINE_integer("save_best_n", 1, "Save the best n models when save_best is true")
 flags.DEFINE_boolean("save_best", True, "Save the best model.")
-flags.DEFINE_boolean("save_ckpt", True, "Save the checkpoints.")
+flags.DEFINE_boolean("save_ckpt", False, "Save the checkpoints.")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
-flags.DEFINE_boolean("wandb", True, "Log wandb.")
+flags.DEFINE_boolean("wandb", False, "Log wandb.")
 flags.DEFINE_boolean("save_video", False, "Save videos during evaluation.")
 config_flags.DEFINE_config_file(
     "config",
@@ -92,10 +78,6 @@ config_flags.DEFINE_config_file(
 )
 
 
-# Path 1: purely online (on)
-# Path 2: online2offline (on2of)
-# path 3: online2offline2online (on2of2on)
-#
 # Seeding:
 # 1. Seed the environment and the action space
 # 2. Seed the agent
@@ -103,12 +85,14 @@ config_flags.DEFINE_config_file(
 
 def main(_):
 
+    top_n_checkpoints = [200000, 400000, 600000, 800000, 1000000, 1100000, 1250000, 1500000]
+
     online_initial_model_tag = "randomInit"
 
     # create the project directory
     now = datetime.now()
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
-    project_name = f"{FLAGS.env_name}_seed{FLAGS.seed}_on_sac"
+    project_name = f"{FLAGS.env_name}-ras{FLAGS.reward_accumulate_steps}_seed{FLAGS.seed}_on_sac"
     project_name += f"_{online_initial_model_tag}_{expr_time_str}"
     project_dir = os.path.join(FLAGS.save_dir, project_name)
     os.makedirs(project_dir, exist_ok=True)
@@ -132,14 +116,15 @@ def main(_):
         summary_writer = SummaryWriter(project_dir, write_to_disk=True)
 
     # create the environments
+    reward_accumulate_steps=FLAGS.reward_accumulate_steps
     env = gym.make(FLAGS.env_name)
-    env = wrap_gym(env, rescale_actions=True)
+    env = wrap_gym(env, rescale_actions=True, reward_accumulate_steps=reward_accumulate_steps)
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=1)
     env.seed(FLAGS.seed)
     env.action_space.seed(FLAGS.seed)
 
     eval_env = gym.make(FLAGS.env_name)
-    eval_env = wrap_gym(eval_env, rescale_actions=True)
+    eval_env = wrap_gym(eval_env, rescale_actions=True, reward_accumulate_steps=reward_accumulate_steps)
     eval_env.seed(FLAGS.seed + Training_Testing_Seed_Gap)
 
     # create the replay buffer or initialized from the previous replay buffer
@@ -150,6 +135,7 @@ def main(_):
 
     # create the agent and initialize the orbax checkpointer for saving the agent periodically
     kwargs = dict(FLAGS.config)
+    ## the purely online RL process uses SAC to learn policies
     agent = SACLearner(FLAGS.seed, env.observation_space, env.action_space, **kwargs)
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
 
@@ -188,9 +174,7 @@ def main(_):
 
 
     observation, done = env.reset(), False
-    max_steps = FLAGS.max_steps
-
-    top_n_checkpoints = list(range(FLAGS.ckpt_interval, FLAGS.max_steps+1, FLAGS.ckpt_interval))
+    max_steps = FLAGS.max_steps # T0: the budget for the purely online RL process
 
     for i in tqdm.tqdm(
         range(start_step, max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
@@ -304,7 +288,7 @@ def main(_):
                 save_log(summary_writer, {"best_ckpt_return":best_ckpt_performance["top1"]["return"]}, i, "evaluation", use_wandb=FLAGS.wandb)
 
             # save the checkpoint at step i
-            if FLAGS.save_ckpt and ((i<1e5 and i%1e4==0) or (i % FLAGS.ckpt_interval == 0)):
+            if FLAGS.save_ckpt and (i % FLAGS.ckpt_interval == 0):
                 ckpt_filepath = f"{project_dir}/ckpts/ckpt_{i}"
                 save_agent(orbax_checkpointer, agent, i, ckpt_filepath)
 
