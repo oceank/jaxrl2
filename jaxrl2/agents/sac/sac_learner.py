@@ -2,11 +2,13 @@
 
 import copy
 import functools
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
 import gym
 import jax
+import jax.numpy as jnp
 import numpy as np
+import distrax
 import optax
 from flax.core.frozen_dict import FrozenDict
 from flax.training.train_state import TrainState
@@ -68,6 +70,27 @@ def _update_jit(
         new_temp,
         {**critic_info, **actor_info, **alpha_info},
     )
+
+
+@functools.partial(jax.jit, static_argnames=("critic_apply_fn", "critic_reduction"))
+def _calculate_q_jit(
+    critic_apply_fn: Callable[..., distrax.Distribution],
+    critic_params: Params,
+    observations: np.ndarray,
+    actions:jnp.ndarray,
+    critic_reduction: str
+) -> jnp.ndarray:
+    qs = critic_apply_fn(
+        {"params": critic_params}, observations, actions
+    )
+    if critic_reduction == "min":
+        q = qs.min(axis=0)
+    elif critic_reduction == "mean":
+        q = qs.mean(axis=0)
+    else:
+        raise NotImplemented()
+    return q
+
 
 
 class SACLearner(Agent):
@@ -177,3 +200,13 @@ class SACLearner(Agent):
         self._temp = new_temp
 
         return info
+
+    def get_Q_value(self, observations, actions):
+        qs = _calculate_q_jit(
+            self._critic.apply_fn,
+            self._critic.params,
+            observations,
+            actions,
+            self.critic_reduction)
+        qs = np.asarray(qs)
+        return qs
